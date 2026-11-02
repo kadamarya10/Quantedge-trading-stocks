@@ -1,0 +1,10 @@
+fastapi>=0.110.0
+uvicorn>=0.28.0
+requests>=2.28.0
+pandas>=2.0.0
+tabulate>=0.9.0
+colorama>=0.4.6
+dhanhq>=2.3.0
+python-dotenv>=1.0.0
+curl_cffi>=0.7.0
+nsepython>=2.0.0

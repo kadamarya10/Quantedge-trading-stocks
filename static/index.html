@@ -1,0 +1,1678 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuantEdge // NSE Quant, Options & Multi-Source Live News Terminal</title>
+  <link rel="stylesheet" href="/static/style.css?v=3.6">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📈</text></svg>">
+  <!-- Official TradingView Widget Script -->
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+</head>
+
+<body>
+  <div class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="top-navbar">
+      <div class="brand-section">
+        <div class="brand-logo">⚡</div>
+        <div>
+          <div class="brand-title">QuantEdge</div>
+          <div class="brand-subtitle">NSE Quant & Multi-Source Financial Terminal</div>
+        </div>
+      </div>
+
+      <!-- Tab Switcher -->
+      <nav class="tab-navigation">
+        <button class="nav-tab-btn active" id="tab-btn-news" onclick="switchTab('news')">
+          <span>📰</span> Live News & Filings
+          <span class="badge-count" id="news-count-badge">Multi-Source</span>
+        </button>
+        <button class="nav-tab-btn" id="tab-btn-options" onclick="switchTab('options')">
+          <span>⚡</span> Option Trading
+          <span class="badge-count" id="options-signal-badge">NIFTY</span>
+        </button>
+        <button class="nav-tab-btn" id="tab-btn-stocks" onclick="switchTab('stocks')">
+          <span>📊</span> Stocks & Predictions
+          <span class="badge-count" id="stocks-badge">Active Catalysts</span>
+        </button>
+      </nav>
+
+      <!-- Right Navbar Controls -->
+      <div class="navbar-actions">
+        <div class="clock-badge" id="live-clock">--:--:-- IST</div>
+        <button class="btn-icon" id="btn-sound-toggle" onclick="toggleAudioAlerts()" title="Toggle Trade Chime Sound">
+          🔊 <span id="sound-status-label">Sound: ON</span>
+        </button>
+        <div class="pulse-pill live">
+          <span class="pulse-dot"></span>
+          <span id="feed-status-text">LIVE FEEDS ACTIVE</span>
+        </div>
+        <button class="btn-icon" onclick="triggerManualRefresh()" title="Refresh Data">
+          🔄 <span id="refresh-btn-label">Refresh</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- ========================================================
+         TAB 1: MULTI-SOURCE FINANCIAL NEWS & OFFICIAL FILINGS
+         ======================================================== -->
+    <main id="panel-news" class="tab-content-panel active">
+      <div class="news-header-banner">
+        <div class="news-banner-info">
+          <h2>Verified Multi-Source Financial News & Announcements</h2>
+          <p>Real-time corporate filings, board meetings, broker research, and market-moving developments aggregated
+            from verified institutional sources with direct links.</p>
+
+          <!-- Source Verified Badges -->
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">
+            <span class="news-source-tag"
+              style="background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.35);">
+              🏛️ NSE India Official
+            </span>
+            <span class="news-source-tag"
+              style="background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border-color: rgba(245, 158, 11, 0.35);">
+              📰 Economic Times
+            </span>
+            <span class="news-source-tag"
+              style="background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.35);">
+              🟢 Livemint
+            </span>
+            <span class="news-source-tag"
+              style="background: rgba(139, 92, 246, 0.15); color: var(--accent-purple); border-color: rgba(139, 92, 246, 0.35);">
+              💼 Moneycontrol
+            </span>
+            <span class="news-source-tag"
+              style="background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border-color: rgba(245, 158, 11, 0.35);">
+              🎯 Nuvama Research
+            </span>
+            <span class="news-source-tag"
+              style="background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); border-color: rgba(59, 130, 246, 0.35);">
+              📺 CNBC / NDTV Profit
+            </span>
+          </div>
+        </div>
+
+        <div class="news-stats-row">
+          <div class="news-stat-chip">
+            <div class="val" id="stat-total-news">--</div>
+            <div class="lbl">Total Articles</div>
+          </div>
+          <div class="news-stat-chip">
+            <div class="val val-up" id="stat-bull-news">--</div>
+            <div class="lbl">Bullish Catalysts</div>
+          </div>
+          <div class="news-stat-chip">
+            <div class="val val-down" id="stat-risk-news">--</div>
+            <div class="lbl">Risk Notices</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Source Filter Chips -->
+      <div class="news-controls-row" style="margin-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span
+            style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-right: 4px;">Source:</span>
+          <div class="category-chips-list" id="news-source-filters">
+            <button class="cat-pill active" onclick="filterNewsSource('all')">🌐 All Sources</button>
+            <button class="cat-pill" onclick="filterNewsSource('nse')">🏛️ NSE Official</button>
+            <button class="cat-pill" onclick="filterNewsSource('et')">📰 Economic Times</button>
+            <button class="cat-pill" onclick="filterNewsSource('livemint')">🟢 Livemint</button>
+            <button class="cat-pill" onclick="filterNewsSource('moneycontrol')">💼 Moneycontrol</button>
+            <button class="cat-pill" onclick="filterNewsSource('nuvama')">🎯 Nuvama Research</button>
+            <button class="cat-pill" onclick="filterNewsSource('hub')">📺 CNBC / NDTV / BS</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Category Filter Chips & Search -->
+      <div class="news-controls-row">
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span
+            style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-right: 4px;">Topic:</span>
+          <div class="category-chips-list" id="news-category-filters">
+            <button class="cat-pill active" onclick="filterNewsCategory('all')">All Topics</button>
+            <button class="cat-pill" onclick="filterNewsCategory('Research')">🎯 Broker Calls & Research</button>
+            <button class="cat-pill" onclick="filterNewsCategory('Dividend')">💰 Dividends & Bonus</button>
+            <button class="cat-pill" onclick="filterNewsCategory('Financial Results')">📑 Financial Results</button>
+            <button class="cat-pill" onclick="filterNewsCategory('Orders')">🚀 Orders & Deals</button>
+            <button class="cat-pill" onclick="filterNewsCategory('Board Meeting')">🏛️ Board Meetings</button>
+            <button class="cat-pill" onclick="filterNewsCategory('Macro')">📊 Market Action & Macro</button>
+            <button class="cat-pill" onclick="filterNewsCategory('Merger')">🤝 M&A / Restructuring</button>
+          </div>
+        </div>
+
+        <div class="search-input-wrapper">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="news-search-input" class="search-input"
+            placeholder="Search headline, symbol, or source..." oninput="onNewsSearchInput(this.value)">
+        </div>
+      </div>
+
+      <!-- News Cards Grid -->
+      <div class="news-grid" id="news-cards-container">
+        <div class="loading-container">
+          <div class="spinner"></div>
+          <div>Aggregating real-time news across NSE India, Economic Times, Livemint & Moneycontrol...</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ========================================================
+         TAB 2: OPTION TRADING (NIFTY Live OI, Greeks & Algo)
+         ======================================================== -->
+    <main id="panel-options" class="tab-content-panel">
+      <!-- Top Metrics Ribbon -->
+      <div class="options-summary-ribbon">
+        <div class="metric-box">
+          <div class="label">NIFTY 50 Spot Price <span id="opt-source-badge" class="badge-count">LIVE</span></div>
+          <div class="val-large" id="opt-spot-price">--</div>
+          <div class="subtext" id="opt-spot-subtext">Expiry: --</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">ATM Strike</div>
+          <div class="val-large" id="opt-atm-strike">--</div>
+          <div class="subtext" id="opt-atm-status">Equilibrium Straddle</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">Put-Call Ratio (PCR)</div>
+          <div class="val-large" id="opt-pcr-val">--</div>
+          <div class="subtext" id="opt-pcr-status">--</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">Max Pain Strike</div>
+          <div class="val-large" id="opt-max-pain">--</div>
+          <div class="subtext">Writer Expiry Magnet</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">Resistance & Support</div>
+          <div class="val-large" id="opt-res-sup">-- / --</div>
+          <div class="subtext">Max Call & Put Open Interest</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">India VIX</div>
+          <div class="val-large" id="opt-vix-val">--</div>
+          <div class="subtext" id="opt-vix-subtext">Volatility Regime</div>
+        </div>
+      </div>
+
+      <!-- AI Algo Signal & Prediction Card -->
+      <div class="signal-hero-card" id="opt-signal-hero">
+        <div class="signal-hero-header">
+          <div class="signal-badge-title" id="opt-signal-title">
+            <span>⚪</span> ANALYZING MARKET CONFLUENCE...
+          </div>
+          <div class="confluence-meter">
+            <span class="confluence-label" id="opt-confluence-label">Confluence: 0%</span>
+            <div class="confluence-bar-bg">
+              <div class="confluence-bar-fill" id="opt-confluence-bar" style="width: 0%; background: #64748b;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="signal-details-grid">
+          <div class="signal-reasoning-box">
+            <h4>Quantitative AI Signal Driver</h4>
+            <p id="opt-signal-reason">Awaiting live market data stream...</p>
+            <div style="margin-top: 10px; font-size: 12px; color: var(--text-muted);" id="opt-signal-aux">
+              OI Velocity: Stable | Heavyweights: Balanced | 5m Chart: Analyzing
+            </div>
+          </div>
+          <div class="signal-execution-box">
+            <div class="execution-row">
+              <span style="color: var(--text-muted);">Recommended Target:</span>
+              <strong id="opt-target-inst">--</strong>
+            </div>
+            <div class="execution-row">
+              <span style="color: var(--text-muted);">Est. Entry Premium:</span>
+              <strong id="opt-entry-prem" class="val-up">₹--</strong>
+            </div>
+            <div class="execution-row">
+              <span style="color: var(--text-muted);">Strategy Mode:</span>
+              <span id="opt-strategy-mode">Standard Confluence</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Option Chain Table with Greeks -->
+      <!-- Live Option Chain Table with Greeks & Real-Time Controls -->
+      <div class="glass-card">
+        <div class="card-header-row" style="flex-wrap: wrap; gap: 10px;">
+          <div class="card-title">
+            <span class="card-title-icon">📊</span> NIFTY Option Chain Strike Ladder (ATM Spotlight)
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <!-- Real-Time Speed Selector -->
+            <div
+              style="display: flex; background: var(--bg-surface); padding: 3px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); gap: 4px;">
+              <button class="btn-icon active" id="btn-speed-1s" onclick="setOptionSpeed(1000)"
+                style="font-size: 11px; padding: 3px 8px;" title="Sub-second rapid updates">
+                ⚡ Ultra Fast (1s)
+              </button>
+              <button class="btn-icon" id="btn-speed-3s" onclick="setOptionSpeed(3000)"
+                style="font-size: 11px; padding: 3px 8px;">
+                ⏱️ 3s Normal
+              </button>
+            </div>
+
+            <!-- Micro-Tick Fluctuation Engine Switcher -->
+            <button class="btn-icon active" id="btn-toggle-fluctuation" onclick="toggleMicroTickFluctuation()"
+              style="font-size: 11px; padding: 4px 10px; color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.4);"
+              title="Generates real-time practice ticks off-market. Click to freeze at official 3:30 PM NSE closing snapshot.">
+              🌊 Off-Market Practice Ticker: <span id="fluctuation-status-lbl">ACTIVE (Simulated)</span>
+            </button>
+
+            <!-- Broker Feed Status & Key Input Trigger -->
+            <button class="btn-icon" id="btn-broker-status" onclick="openBrokerModal()"
+              style="font-size: 11px; padding: 4px 10px; border-color: var(--border-subtle);">
+              <span id="broker-status-icon">🔑</span> <span id="broker-status-text">Broker API</span>
+            </button>
+
+            <button class="btn-icon" id="btn-toggle-greeks" onclick="toggleGreeksView()"
+              style="font-size: 11px; padding: 4px 10px;">
+              📐 <span id="greeks-toggle-label">Greeks</span>
+            </button>
+            <button class="btn-primary" onclick="openGreeksGuideModal()"
+              style="font-size: 11px; padding: 4px 10px; background: rgba(99, 102, 241, 0.2); border-color: var(--accent-indigo); color: #fff;">
+              📐 Greek Formulas & Best Strike Guide
+            </button>
+
+            <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);"
+              id="opt-latency-badge">
+              ⚡ Latency: --ms
+            </div>
+          </div>
+        </div>
+
+        <!-- Broker Diagnostics Alert Banner (Shown when broker token expired) -->
+        <div id="broker-alert-banner"
+          style="display: none; margin: 10px 0 14px 0; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: var(--radius-sm); padding: 8px 14px; font-size: 12px; color: #fbbf24; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span>⚠️</span>
+            <span id="broker-alert-msg">Dhan broker access token has expired (daily 24h SEBI expiry). Running on public
+              NSE web feed with 1-min snapshots.</span>
+          </div>
+          <button class="btn-primary" onclick="openBrokerModal()"
+            style="padding: 3px 10px; font-size: 11px; margin-left: 10px;">
+            🔑 Enter Today's Token (50ms Ticks)
+          </button>
+        </div>
+
+        <!-- Option Buyer's Greek Intelligence & Optimal Strike Recommendations -->
+        <div class="greek-buyer-panel"
+          style="margin-bottom: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px;">
+          <!-- Best Call Strike -->
+          <div
+            style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-sm); padding: 12px 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span
+                style="font-size: 11px; font-weight: 700; color: var(--accent-emerald); text-transform: uppercase; letter-spacing: 0.5px;">
+                🟢 Optimal Call (CE) for Buyers
+              </span>
+              <span class="badge"
+                style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); font-size: 10px;"
+                id="greek-best-ce-tag">
+                ⭐ PEAK GAMMA EXPLOSION
+              </span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: baseline;">
+              <div style="font-size: 18px; font-weight: 800; color: #fff; font-family: var(--font-mono);"
+                id="greek-best-ce-strike">
+                NIFTY 22650 CE (ATM)
+              </div>
+              <div
+                style="font-size: 15px; font-weight: 700; color: var(--accent-emerald); font-family: var(--font-mono);"
+                id="greek-best-ce-ltp">
+                ₹182.25
+              </div>
+            </div>
+            <div
+              style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono);"
+              id="greek-best-ce-metrics">
+              <span>Δ Delta: <strong id="gb-ce-delta">0.52</strong></span>
+              <span>Γ Gamma: <strong id="gb-ce-gamma" style="color: var(--accent-purple);">0.0024</strong></span>
+              <span>Θ Theta: <strong id="gb-ce-theta" style="color: var(--accent-rose);">-₹10.2/d</strong></span>
+              <span>ν Vega: <strong id="gb-ce-vega" style="color: var(--accent-cyan);">₹14.1</strong></span>
+            </div>
+            <div style="margin-top: 6px; font-size: 11px; color: var(--text-muted); line-height: 1.4;"
+              id="greek-best-ce-desc">
+              Maximum Gamma acceleration with optimal time decay efficiency. Delta expands fastest during upward
+              breakouts.
+            </div>
+          </div>
+
+          <!-- Best Put Strike -->
+          <div
+            style="background: rgba(244, 63, 94, 0.08); border: 1px solid rgba(244, 63, 94, 0.3); border-radius: var(--radius-sm); padding: 12px 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span
+                style="font-size: 11px; font-weight: 700; color: var(--accent-rose); text-transform: uppercase; letter-spacing: 0.5px;">
+                🔴 Optimal Put (PE) for Buyers
+              </span>
+              <span class="badge"
+                style="background: rgba(244, 63, 94, 0.2); color: var(--accent-rose); font-size: 10px;"
+                id="greek-best-pe-tag">
+                ⭐ PEAK GAMMA EXPLOSION
+              </span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: baseline;">
+              <div style="font-size: 18px; font-weight: 800; color: #fff; font-family: var(--font-mono);"
+                id="greek-best-pe-strike">
+                NIFTY 22650 PE (ATM)
+              </div>
+              <div style="font-size: 15px; font-weight: 700; color: var(--accent-rose); font-family: var(--font-mono);"
+                id="greek-best-pe-ltp">
+                ₹120.20
+              </div>
+            </div>
+            <div
+              style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono);"
+              id="greek-best-pe-metrics">
+              <span>Δ Delta: <strong id="gb-pe-delta">-0.48</strong></span>
+              <span>Γ Gamma: <strong id="gb-pe-gamma" style="color: var(--accent-purple);">0.0024</strong></span>
+              <span>Θ Theta: <strong id="gb-pe-theta" style="color: var(--accent-rose);">-₹9.8/d</strong></span>
+              <span>ν Vega: <strong id="gb-pe-vega" style="color: var(--accent-cyan);">₹14.1</strong></span>
+            </div>
+            <div style="margin-top: 6px; font-size: 11px; color: var(--text-muted); line-height: 1.4;"
+              id="greek-best-pe-desc">
+              Maximum Gamma acceleration with optimal time decay efficiency. Delta expands fastest during downward
+              momentum.
+            </div>
+          </div>
+        </div>
+
+        <div class="option-chain-container">
+          <table class="option-chain-table" id="option-chain-table-el">
+            <thead>
+              <tr id="opt-chain-header-top">
+                <th colspan="3" id="th-ce-main"
+                  style="text-align: center; border-right: 1px solid var(--border-subtle); color: var(--accent-emerald);">
+                  CALLS (CE)</th>
+                <th class="col-strike">STRIKE</th>
+                <th colspan="3" id="th-pe-main"
+                  style="text-align: center; border-left: 1px solid var(--border-subtle); color: var(--accent-rose);">
+                  PUTS
+                  (PE)</th>
+              </tr>
+              <tr id="opt-chain-header-cols">
+                <th>OI</th>
+                <th>Chg OI</th>
+                <th style="border-right: 1px solid var(--border-subtle);">LTP (₹)</th>
+                <th class="col-strike">ATM</th>
+                <th style="border-left: 1px solid var(--border-subtle); text-align: left;">LTP (₹)</th>
+                <th style="text-align: left;">Chg OI</th>
+                <th style="text-align: left;">OI</th>
+              </tr>
+            </thead>
+            <tbody id="opt-chain-tbody">
+              <tr>
+                <td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">
+                  Loading strike ladder...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Paper Trader Dashboard with Real-Time P&L Ticker -->
+      <div class="paper-trader-box">
+        <div class="card-header-row" style="flex-wrap: wrap; gap: 10px;">
+          <div class="card-title" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <span class="card-title-icon">💼</span> Virtual Paper Trading Simulation
+            <span class="badge"
+              style="background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); font-size: 11px; display: inline-flex; align-items: center; gap: 5px;">
+              <span class="live-pulse-dot"></span> REAL-TIME P&L TICKER (ACTIVE)
+            </span>
+            <span class="badge"
+              style="background: rgba(99, 102, 241, 0.15); color: var(--accent-cyan); border: 1px solid rgba(99, 102, 241, 0.35); font-size: 11px;">
+              🎯 HIGH-ACCURACY SNIPER MODE
+            </span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="btn-primary" onclick="openTradeHistoryModal()"
+              style="font-size: 11px; padding: 6px 12px; background: rgba(99, 102, 241, 0.2); border-color: var(--accent-indigo); color: #fff;">
+              📜 View Trade History & P&L (<span id="paper-trades-badge">0</span>)
+            </button>
+            <button class="btn-icon" onclick="resetPaperTrading()" style="font-size: 11px; padding: 6px 10px;">🔄 Reset
+              Capital</button>
+          </div>
+        </div>
+
+        <!-- Anti-Whipsaw RMS Status Bar -->
+        <div
+          style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding: 6px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: var(--radius-sm); font-size: 11px; color: var(--text-muted);">
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <span>🛡️</span> <strong>Option Buyer Armor:</strong> SL: 16% • Target: 40% (1:2.5 R:R) • Breakeven Lock at +18% • ⏱️ 10m Theta Time-Stop • 75%+ Confluence • 3-Tick Debounce
+          </div>
+          <div id="paper-mode-tag" style="color: var(--accent-emerald); font-weight: 600;">
+            ✓ Option Buyer Protection Active
+          </div>
+        </div>
+
+        <div id="paper-cooldown-banner"
+          style="display: none; margin-top: 10px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-sm); padding: 8px 12px; font-size: 11px; color: var(--accent-amber); display: flex; align-items: center; gap: 8px;">
+          <span>⏳</span> <span id="paper-cooldown-text">Post-Trade Cooldown Active: Waiting before next trade...</span>
+        </div>
+
+        <div
+          style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 14px;">
+          <div class="metric-box">
+            <div class="label">Virtual Capital</div>
+            <div class="val-large" id="paper-capital">₹1,00,000.00</div>
+          </div>
+          <div class="metric-box">
+            <div class="label">Total Realized P&L</div>
+            <div class="val-large" id="paper-realized-pnl" style="color: var(--text-primary);">₹0.00</div>
+          </div>
+          <div class="metric-box">
+            <div class="label">Win Rate %</div>
+            <div class="val-large" id="paper-win-rate">0.0%</div>
+          </div>
+          <div class="metric-box">
+            <div class="label">Total Trades Executed</div>
+            <div class="val-large" id="paper-trades-count">0</div>
+          </div>
+        </div>
+
+        <div id="paper-pos-container">
+          <div
+            style="margin-top: 14px; font-size: 13px; color: var(--text-muted); text-align: center; padding: 14px; border: 1px dashed var(--border-subtle); border-radius: var(--radius-md);">
+            No active open position. System will auto-execute paper trade when AI signal triggers.
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ========================================================
+         TAB 3: STOCKS & QUANT PREDICTIONS (Single Stock + All NSE Stocks)
+         ======================================================== -->
+    <main id="panel-stocks" class="tab-content-panel">
+      <!-- Mode Switcher: Single Stock Deep Dive vs All NSE Stocks Quant Scanner -->
+      <div
+        style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 14px; flex-wrap: wrap;">
+        <button class="nav-tab-btn active" id="btn-mode-single" onclick="switchStockMode('single')">
+          <span>🔍</span> Single Stock Deep Dive & Candlestick Chart
+        </button>
+        <button class="nav-tab-btn" id="btn-mode-all" onclick="switchStockMode('all')">
+          <span>⚡</span> AI Stock Suggestions (News & Breakouts Only)
+        </button>
+        <button class="nav-tab-btn" id="btn-mode-tracker" onclick="switchStockMode('tracker')">
+          <span>🎯</span> Target & Stoploss Track Record (History)
+          <span id="nav-tracker-win-badge"
+            style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 12px; margin-left: 6px;">
+            --% Win
+          </span>
+        </button>
+      </div>
+
+      <!-- ====================================================
+           VIEW A: SINGLE STOCK DEEP DIVE & CHART
+           ==================================================== -->
+      <div id="single-stock-view-container">
+        <!-- Search Input & Analyze Button -->
+        <div class="stock-search-bar-row">
+          <div class="stock-search-input-box">
+            <span class="prefix-icon">🔍</span>
+            <input type="text" id="stock-symbol-input"
+              placeholder="Search ANY NSE stock (e.g. RELIANCE, TATASTEEL, INFY, HAL, IRFC, RVNL, ZOMATO)..."
+              onkeypress="handleStockSearchKey(event)">
+          </div>
+          <button class="btn-primary" onclick="searchAndPredictStock()">
+            <span>⚡ Predict & Analyze</span>
+          </button>
+        </div>
+
+        <!-- Sector Quick Pills -->
+        <div class="sector-pills-row" id="sector-pills-container">
+          <span class="sector-label">Sectors:</span>
+          <button class="sector-pill active" onclick="loadSectorStocks('NIFTY 50')">NIFTY 50</button>
+          <button class="sector-pill" onclick="loadSectorStocks('Banking & Fin')">Banking & Fin</button>
+          <button class="sector-pill" onclick="loadSectorStocks('IT Tech')">IT Tech</button>
+          <button class="sector-pill" onclick="loadSectorStocks('Auto')">Auto</button>
+          <button class="sector-pill" onclick="loadSectorStocks('Railways & PSU')">Railways & PSU</button>
+          <button class="sector-pill" onclick="loadSectorStocks('Defense & Aero')">Defense & Aero</button>
+          <button class="sector-pill" onclick="loadSectorStocks('Metals & Energy')">Metals & Energy</button>
+        </div>
+
+        <!-- Quick Ticker Chips List -->
+        <div class="stock-ticker-chips" id="sector-ticker-chips">
+          <!-- Rendered via JS -->
+        </div>
+
+        <!-- Stock Content Body -->
+        <div id="stock-analysis-content">
+          <div class="loading-container" id="stock-loader" style="display: none;">
+            <div class="spinner"></div>
+            <div>Synthesizing NSE quotes, F&O derivatives, chart patterns, and multi-horizon targets...</div>
+          </div>
+
+          <div id="stock-results-view">
+            <!-- Stock Overview Grid -->
+            <div class="stock-overview-grid">
+              <!-- Left: Quote Details -->
+              <div class="stock-main-card">
+                <div class="stock-title-section">
+                  <div>
+                    <div class="stock-symbol-text" id="stk-symbol">RELIANCE</div>
+                    <div class="stock-company-name" id="stk-company">Reliance Industries Limited • Equity</div>
+                  </div>
+                  <div class="stock-ltp-box">
+                    <div class="stock-ltp-large" id="stk-ltp">₹--</div>
+                    <div id="stk-chg" style="font-size: 13px; font-weight: 700;">--</div>
+                  </div>
+                </div>
+
+                <div class="stats-inline-row">
+                  <div class="stats-inline-item">
+                    <div class="lbl">VWAP</div>
+                    <div class="val" id="stk-vwap">₹--</div>
+                  </div>
+                  <div class="stats-inline-item">
+                    <div class="lbl">Day Range</div>
+                    <div class="val" id="stk-day-range">-- - --</div>
+                  </div>
+                  <div class="stats-inline-item">
+                    <div class="lbl">52-Week Range</div>
+                    <div class="val" id="stk-52w-range">-- - --</div>
+                  </div>
+                </div>
+
+                <div class="stats-inline-row">
+                  <div class="stats-inline-item">
+                    <div class="lbl">Delivery %</div>
+                    <div class="val" id="stk-deliv-pct">--%</div>
+                  </div>
+                  <div class="stats-inline-item">
+                    <div class="lbl">Volume</div>
+                    <div class="val" id="stk-volume">--</div>
+                  </div>
+                  <div class="stats-inline-item">
+                    <div class="lbl">P/E vs Sector</div>
+                    <div class="val" id="stk-pe-info">--x / --x</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right: Master AI Quant Prediction Card -->
+              <div class="stock-prediction-card">
+                <div class="quant-verdict-banner">
+                  <div>
+                    <div
+                      style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">
+                      AI Master Quant Prediction</div>
+                    <div class="verdict-badge bullish" id="stk-verdict-badge">🚀 STRONG BUY</div>
+                  </div>
+                  <div style="text-align: right;">
+                    <div
+                      style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">
+                      Conviction Score</div>
+                    <div style="font-family: var(--font-mono); font-size: 26px; font-weight: 800;" id="stk-score-val">78
+                      /
+                      100</div>
+                    <div style="font-size: 11px; color: var(--accent-emerald);" id="stk-prob-win">Win Prob: 82%</div>
+                  </div>
+                </div>
+
+                <div style="font-size: 13px; color: var(--text-primary); margin-bottom: 12px;" id="stk-bias-badge">
+                  🟢 High Institutional Accumulation
+                </div>
+
+                <div id="stk-catalyst-box"
+                  style="background: rgba(0,0,0,0.25); padding: 12px; border-radius: var(--radius-sm); border-left: 3px solid var(--accent-cyan); font-size: 12px; margin-bottom: 16px;">
+                  <strong>Top Driver:</strong> <span id="stk-top-driver">Analyzing key catalyst...</span>
+                </div>
+
+                <div style="display: flex; gap: 10px;">
+                  <button class="btn-primary" style="flex: 1; padding: 9px;" onclick="openBacktestModal()">
+                    🧪 Run 2-Year Walk-Forward Backtest
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- ========================================================
+               🧠 AI MULTI-PILLAR RESEARCH & PRICE GROWTH ENGINE
+               Synthesizes: Fundamentals + NSE Quarterly Results + News + Technicals/Delivery
+               ======================================================== -->
+            <div class="glass-card ai-growth-engine-card" id="ai-growth-engine-container"
+              style="margin-top: 24px; border: 1px solid rgba(99, 102, 241, 0.45); background: linear-gradient(180deg, rgba(17, 24, 47, 0.95) 0%, rgba(13, 19, 39, 0.98) 100%);">
+              <div class="card-header-row" style="margin-bottom: 16px;">
+                <div class="card-title">
+                  <span class="card-title-icon"
+                    style="background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4);">🧠</span>
+                  <div>
+                    <span style="font-weight: 800; font-size: 16px; color: #ffffff;">AI Multi-Pillar Research & Price
+                      Growth Engine</span>
+                    <div style="font-size: 11px; color: var(--text-muted); font-weight: 400; margin-top: 2px;">
+                      Researched across Fundamentals • NSE Quarterly Results • Real-Time News • Institutional Delivery &
+                      OI
+                    </div>
+                  </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span class="verdict-badge bullish" id="stk-ai-rec-badge" style="font-size: 12px; padding: 6px 14px;">
+                    🚀 TOP AI GROWTH PICK
+                  </span>
+                </div>
+              </div>
+
+              <!-- Target, Stoploss & Risk:Reward Hero Row -->
+              <div class="ai-target-hero-row">
+                <div class="ai-hero-stat target-box">
+                  <div class="ai-hero-lbl">🎯 Projected Upside Target</div>
+                  <div class="ai-hero-val" id="stk-ai-target-price">₹--</div>
+                  <div class="ai-hero-sub" id="stk-ai-target-pct">+--% Upside Target</div>
+                </div>
+                <div class="ai-hero-stat sl-box">
+                  <div class="ai-hero-lbl">🛡️ Protective Stoploss (SL)</div>
+                  <div class="ai-hero-val" id="stk-ai-sl-price">₹--</div>
+                  <div class="ai-hero-sub" id="stk-ai-sl-pct">---% Downside Risk</div>
+                </div>
+                <div class="ai-hero-stat rr-box">
+                  <div class="ai-hero-lbl">⚖️ Risk : Reward Ratio</div>
+                  <div class="ai-hero-val" id="stk-ai-rr">1 : --</div>
+                  <div class="ai-hero-sub" id="stk-ai-horizon">1 - 3 Weeks (Swing)</div>
+                </div>
+                <div class="ai-hero-stat prob-box">
+                  <div class="ai-hero-lbl">📊 AI Conviction & Win Prob</div>
+                  <div class="ai-hero-val" id="stk-ai-conviction">-- / 100</div>
+                  <div class="ai-hero-sub" id="stk-ai-winprob">Win Probability: --%</div>
+                </div>
+              </div>
+
+              <!-- 🔥 WHY THIS STOCK IS RISING (Active News Catalyst & Breakout Reason) -->
+              <div class="ai-why-rising-card" id="stk-why-rising-card"
+                style="margin-top: 14px; margin-bottom: 14px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.45); border-radius: var(--radius-md); padding: 14px 18px;">
+                <div
+                  style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 16px;">🔥</span>
+                    <span
+                      style="font-weight: 800; font-size: 13px; color: var(--accent-emerald); text-transform: uppercase; letter-spacing: 0.5px;">WHY
+                      THIS STOCK IS RISING // ACTIVE CATALYSTS:</span>
+                  </div>
+                  <div id="stk-triggers-container" style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    <!-- Dynamic tags: 📰 Positive News, 🚀 Volume Breakout, etc. -->
+                  </div>
+                </div>
+                <div id="stk-why-rising-text"
+                  style="font-size: 13px; line-height: 1.6; color: #ffffff; font-weight: 600;">
+                  Analyzing active news releases, institutional broker calls, and breakout volume...
+                </div>
+              </div>
+
+              <!-- Unified AI Growth Thesis Narrative Box -->
+              <div class="ai-thesis-narrative-box">
+                <div class="thesis-header">
+                  <span style="color: var(--accent-cyan); font-weight: 700;">💡 Detailed AI Multi-Factor Thesis:</span>
+                </div>
+                <div class="thesis-body" id="stk-ai-thesis-text">
+                  Analyzing fundamental valuation, latest NSE quarterly earnings beat, institutional news coverage, and
+                  delivery accumulation...
+                </div>
+              </div>
+
+              <!-- The 4 Deep Research Pillars Grid -->
+              <div class="section-heading-sm" style="margin-top: 18px; margin-bottom: 12px;">
+                <span>🔬</span> Multi-Pillar Research Breakdown (Fundamentals • Results • News • Technicals)
+              </div>
+
+              <div class="ai-research-pillars-grid">
+                <!-- Pillar 1: Fundamentals -->
+                <div class="pillar-card fund-pillar">
+                  <div class="pillar-header">
+                    <div class="pillar-icon">🏛️</div>
+                    <div>
+                      <div class="pillar-title">1. Fundamental Valuation</div>
+                      <div class="pillar-status" id="stk-pillar-fund-status">Checking P/E vs Sector...</div>
+                    </div>
+                  </div>
+                  <div class="pillar-desc" id="stk-pillar-fund-desc">
+                    Evaluating stock P/E against sector benchmark and balance sheet margin of safety.
+                  </div>
+                </div>
+
+                <!-- Pillar 2: NSE Quarterly Results -->
+                <div class="pillar-card results-pillar">
+                  <div class="pillar-header">
+                    <div class="pillar-icon">📑</div>
+                    <div>
+                      <div class="pillar-title">2. NSE Quarterly Financial Results</div>
+                      <div class="pillar-status" id="stk-pillar-results-status">Official Exchange Filings...</div>
+                    </div>
+                  </div>
+                  <div class="pillar-desc" id="stk-pillar-results-desc">
+                    Reviewing official Net Revenue, PAT profit expansion, operating margin, and YoY growth.
+                  </div>
+                </div>
+
+                <!-- Pillar 3: News & Institutional Coverage -->
+                <div class="pillar-card news-pillar">
+                  <div class="pillar-header">
+                    <div class="pillar-icon">📰</div>
+                    <div>
+                      <div class="pillar-title">3. Institutional News & Broker Calls</div>
+                      <div class="pillar-status" id="stk-pillar-news-status">Sentiment & Catalysts...</div>
+                    </div>
+                  </div>
+                  <div class="pillar-desc" id="stk-pillar-news-desc">
+                    Tracking verified coverage from Nuvama Research, Economic Times, Livemint, and corporate filings.
+                  </div>
+                </div>
+
+                <!-- Pillar 4: Technicals & Delivery Volume -->
+                <div class="pillar-card tech-pillar">
+                  <div class="pillar-header">
+                    <div class="pillar-icon">📦</div>
+                    <div>
+                      <div class="pillar-title">4. Technicals & Delivery Volume</div>
+                      <div class="pillar-status" id="stk-pillar-tech-status">Institutional Accumulation...</div>
+                    </div>
+                  </div>
+                  <div class="pillar-desc" id="stk-pillar-tech-desc">
+                    Synthesizing delivery accumulation %, Supertrend support, 20/50 EMA, and Futures OI buildup.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Multi-Horizon Targets Breakdown -->
+            <div class="horizon-targets-section">
+              <div class="section-heading-sm">
+                <span>🎯</span> Multi-Horizon Price Targets & Probability Breakdown
+              </div>
+
+              <div class="targets-cards-grid">
+                <!-- Short-Term Card -->
+                <div class="target-card">
+                  <div class="target-horizon-header">
+                    <div class="target-horizon-title">⚡ Short-Term</div>
+                    <div class="target-horizon-badge">1 - 3 Days (Swing)</div>
+                  </div>
+                  <div class="target-price-box">
+                    <div class="target-price-label">Upside Target</div>
+                    <div class="target-price-val" id="stk-target-short">₹--</div>
+                  </div>
+                  <div class="target-price-box">
+                    <div class="target-price-label">Protective Stop-Loss</div>
+                    <div class="sl-price-val" id="stk-sl-short">₹--</div>
+                  </div>
+                  <div class="target-meta-row">
+                    <span>Risk : Reward</span>
+                    <strong id="stk-rr-short">1 : 1.8</strong>
+                  </div>
+                </div>
+
+                <!-- Mid-Term Card -->
+                <div class="target-card" style="border-color: rgba(99, 102, 241, 0.4);">
+                  <div class="target-horizon-header">
+                    <div class="target-horizon-title">📈 Mid-Term</div>
+                    <div class="target-horizon-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc;">1 - 3
+                      Weeks (Positional)</div>
+                  </div>
+                  <div class="target-price-box">
+                    <div class="target-price-label">Upside Target (Fib 1.272 / R2)</div>
+                    <div class="target-price-val" id="stk-target-mid">₹--</div>
+                  </div>
+                  <div class="target-price-box">
+                    <div class="target-price-label">Trailing Supertrend SL</div>
+                    <div class="sl-price-val" id="stk-sl-mid">₹--</div>
+                  </div>
+                  <div class="target-meta-row">
+                    <span>Risk : Reward</span>
+                    <strong id="stk-rr-mid">1 : 2.4</strong>
+                  </div>
+                </div>
+
+                <!-- Long-Term Card -->
+                <div class="target-card">
+                  <div class="target-horizon-header">
+                    <div class="target-horizon-title">🚀 Long-Term</div>
+                    <div class="target-horizon-badge">1 - 6 Months (Macro)</div>
+                  </div>
+                  <div class="target-price-box">
+                    <div class="target-price-label">Macro Expansion Target (Fib 1.618)</div>
+                    <div class="target-price-val" id="stk-target-long">₹--</div>
+                  </div>
+                  <div class="target-price-box">
+                    <div class="target-price-label">Macro 200 EMA SL</div>
+                    <div class="sl-price-val" id="stk-sl-long">₹--</div>
+                  </div>
+                  <div class="target-meta-row">
+                    <span>Risk : Reward</span>
+                    <strong id="stk-rr-long">1 : 3.2</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Institutional Intelligence & Technical Confluence Grid -->
+            <div class="section-heading-sm">
+              <span>🔬</span> Quantitative Derivative & Technical Confluence
+            </div>
+
+            <div class="quant-intelligence-grid">
+              <div class="intel-card">
+                <div class="title">F&O Buildup Footprint</div>
+                <div class="status" id="stk-fno-status">--</div>
+                <div class="desc" id="stk-fno-desc">Futures Open Interest & Options Put-Call Ratio</div>
+              </div>
+              <div class="intel-card">
+                <div class="title">Supertrend (10, 3)</div>
+                <div class="status" id="stk-st-status">--</div>
+                <div class="desc" id="stk-st-desc">Trailing ATR volatility trend guide</div>
+              </div>
+              <div class="intel-card">
+                <div class="title">Fibonacci Golden Pocket</div>
+                <div class="status" id="stk-fib-status">--</div>
+                <div class="desc" id="stk-fib-desc">0.50 & 0.618 Retracement equilibrium</div>
+              </div>
+              <div class="intel-card">
+                <div class="title">Relative Strength vs NIFTY</div>
+                <div class="status" id="stk-rs-status">--</div>
+                <div class="desc" id="stk-rs-desc">20-day benchmark outperformance score</div>
+              </div>
+            </div>
+
+            <!-- Exact Stock Candlestick Chart Section (Guaranteed Native INR Data + TradingView Option) -->
+            <div class="glass-card" style="margin-top: 24px;">
+              <div class="card-header-row">
+                <div class="card-title">
+                  <span class="card-title-icon">🕯️</span> <span id="stk-chart-title">RELIANCE</span> Real-Time
+                  Candlestick & Technical Chart
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <!-- Chart Engine Switcher -->
+                  <div
+                    style="display: flex; background: var(--bg-surface); padding: 3px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); gap: 4px;">
+                    <button class="btn-icon active" id="btn-chart-native" onclick="switchChartEngine('native')"
+                      style="font-size: 11px; padding: 4px 10px;">
+                      📊 Native Quant Chart (NSE Real ₹)
+                    </button>
+                    <button class="btn-icon" id="btn-chart-tv" onclick="switchChartEngine('tv')"
+                      style="font-size: 11px; padding: 4px 10px;">
+                      ⚡ TradingView Engine
+                    </button>
+                  </div>
+
+                  <!-- Timeframe Switcher for Native Chart -->
+                  <div id="native-timeframe-controls" style="display: flex; gap: 4px;">
+                    <button class="btn-icon" id="btn-range-1mo" onclick="setChartRange('1mo')">1M</button>
+                    <button class="btn-icon" id="btn-range-3mo" onclick="setChartRange('3mo')">3M</button>
+                    <button class="btn-icon active" id="btn-range-6mo" onclick="setChartRange('6mo')">6M</button>
+                    <button class="btn-icon" id="btn-range-1y" onclick="setChartRange('1y')">1Y</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 1. Native High-Precision HTML5 Canvas Candlestick Chart (Guaranteed Indian ₹ Data, Zero Apple) -->
+              <div id="native-chart-view"
+                style="position: relative; height: 420px; width: 100%; background: #080c16; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); overflow: hidden;">
+                <canvas id="stock-candlestick-canvas" style="width: 100%; height: 100%; display: block;"></canvas>
+                <div id="chart-tooltip"
+                  style="display: none; position: absolute; top: 12px; left: 16px; background: rgba(14, 20, 36, 0.95); border: 1px solid var(--border-active); border-radius: var(--radius-sm); padding: 8px 12px; font-family: var(--font-mono); font-size: 11px; pointer-events: none; z-index: 10; box-shadow: 0 4px 14px rgba(0,0,0,0.5);">
+                  <!-- Populated via JS -->
+                </div>
+                <div
+                  style="position: absolute; top: 12px; right: 16px; font-size: 11px; color: var(--text-muted); display: flex; gap: 14px; font-family: var(--font-mono); pointer-events: none; background: rgba(10, 15, 29, 0.7); padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+                  <span style="color: var(--accent-emerald);">● Bullish</span>
+                  <span style="color: var(--accent-rose);">● Bearish</span>
+                  <span style="color: var(--accent-cyan);">━ 20 EMA</span>
+                  <span style="color: var(--accent-amber);">━ 50 EMA</span>
+                </div>
+              </div>
+
+              <!-- 2. TradingView Widget Container (Alternative) -->
+              <div id="tv-chart-view"
+                style="display: none; height: 420px; width: 100%; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-subtle);">
+                <div id="tradingview_stock_container" style="height: 100%; width: 100%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ====================================================
+           VIEW B: AI STOCK SUGGESTIONS (NEWS & BREAKOUTS ONLY)
+           ==================================================== -->
+      <div id="all-stocks-view-container" style="display: none;">
+        <!-- Summary Header Banner -->
+        <div class="news-header-banner" style="margin-bottom: 18px;">
+          <div class="news-banner-info">
+            <h2>⚡ Curated Stock Suggestions (News Catalysts & Breakouts Only)</h2>
+            <p>Zero dormant or inactive stocks. AI only scans and surfaces stocks that have live breaking news,
+              corporate filings, positive broker calls, or confirmed technical volume breakouts — along with the
+              concrete reason why each stock is rising.</p>
+            <div style="margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <button class="btn-primary" onclick="loadAllStockPredictions(true)">
+                ⚡ Refresh Catalyst Stock Suggestions
+              </button>
+              <button class="btn-icon active" id="btn-toggle-stock-ticks" onclick="toggleStockRealtimeTicks()"
+                style="color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.4); font-size: 12px;">
+                <span class="pulse-dot"></span> Real-Time Ticker: <span id="stock-ticks-status-lbl">LIVE (1.5s
+                  Ticks)</span>
+              </button>
+            </div>
+          </div>
+          <div class="news-stats-row">
+            <div class="news-stat-chip">
+              <div class="val" id="scanner-total-count">--</div>
+              <div class="lbl">Total Suggested</div>
+            </div>
+            <div class="news-stat-chip">
+              <div class="val val-up" id="scanner-news-count">--</div>
+              <div class="lbl">News Catalysts</div>
+            </div>
+            <div class="news-stat-chip">
+              <div class="val val-up" id="scanner-breakouts-count">--</div>
+              <div class="lbl">Breakout Stocks</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Target & Stoploss Track Record Banner -->
+        <div class="tracker-quick-banner"
+          style="display: flex; justify-content: space-between; align-items: center; background: linear-gradient(90deg, rgba(16, 185, 129, 0.12) 0%, rgba(99, 102, 241, 0.08) 100%); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: var(--radius-md); padding: 12px 18px; margin-bottom: 18px; flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div style="font-size: 24px;">🎯</div>
+            <div>
+              <div style="font-size: 13px; font-weight: 700; color: #ffffff;">
+                AI Recommendation Target & Stoploss Track Record is LIVE
+              </div>
+              <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                <span id="banner-trk-hits" style="color: var(--accent-emerald); font-weight: 700;">-- Targets Hit</span>
+                •
+                <span id="banner-trk-sl" style="color: var(--accent-rose); font-weight: 700;">-- Stoploss Cuts</span> •
+                <span id="banner-trk-winrate" style="color: var(--accent-cyan); font-weight: 700;">--% Win Rate</span> •
+                <span id="banner-trk-return" style="color: var(--accent-emerald); font-weight: 700;">+--% Net Realized
+                  Gain</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn-primary" onclick="switchStockMode('tracker')" style="padding: 6px 14px; font-size: 12px;">
+            📊 View Full Target & Stoploss Audit History ➜
+          </button>
+        </div>
+
+        <!-- ========================================================
+           🌟 AI TOP CONVICTION GROWTH PICKS (SPOTLIGHT)
+           Stocks chosen by AI combining Fundamentals, Results, News & Delivery
+           ======================================================== -->
+        <div class="glass-card ai-spotlight-card"
+          style="margin-bottom: 20px; border: 1px solid rgba(16, 185, 129, 0.4); background: linear-gradient(180deg, rgba(16, 185, 129, 0.06) 0%, rgba(10, 15, 29, 0.85) 100%);">
+          <div class="card-header-row" style="margin-bottom: 14px;">
+            <div class="card-title">
+              <span class="card-title-icon"
+                style="background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4);">🌟</span>
+              <div>
+                <span style="font-weight: 800; font-size: 15px; color: #ffffff;">AI Top Conviction Stock Suggestions
+                  (Target, Stoploss & Why Rising)</span>
+                <div style="font-size: 11px; color: var(--text-muted); font-weight: 400; margin-top: 2px;">
+                  Synthesizing Positive News Flow, Corporate Results, and Delivery Accumulation to forecast Target &
+                  Stoploss
+                </div>
+              </div>
+            </div>
+            <span class="badge"
+              style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); font-weight: 700; padding: 4px 10px;">
+              🔥 AI High-Conviction
+            </span>
+          </div>
+
+          <!-- Spotlight Cards Carousel / Grid -->
+          <div class="ai-picks-grid" id="ai-top-picks-container">
+            <div style="grid-column: 1 / -1; text-align: center; padding: 24px; color: var(--text-muted);">
+              Scan running... Top AI stock suggestions with Target, Stoploss & Why Rising reason will appear here.
+            </div>
+          </div>
+        </div>
+
+        <!-- Filter Chips for Suggestions -->
+        <div class="news-controls-row" style="margin-bottom: 14px;">
+          <div class="category-chips-list" id="scanner-filter-chips">
+            <button class="cat-pill active" onclick="filterScannerCategory('all')">All Suggestions</button>
+            <button class="cat-pill" onclick="filterScannerCategory('news')">📰 News Stocks</button>
+            <button class="cat-pill" onclick="filterScannerCategory('breakout')">🚀 Technical Breakouts</button>
+            <button class="cat-pill" onclick="filterScannerCategory('fno')">⚡ F&O Long Buildup</button>
+            <button class="cat-pill" onclick="filterScannerCategory('earnings')">📑 Earnings Beat</button>
+            <button class="cat-pill" onclick="filterScannerCategory('banking')">🏦 Banking</button>
+            <button class="cat-pill" onclick="filterScannerCategory('it')">💻 IT</button>
+            <button class="cat-pill" onclick="filterScannerCategory('railways')">🚆 Railways</button>
+            <button class="cat-pill" onclick="filterScannerCategory('defense')">🛡️ Defense</button>
+          </div>
+        </div>
+
+        <!-- Full Curated Stock Suggestions Table -->
+        <div class="glass-card">
+          <div class="option-chain-container">
+            <table class="option-chain-table" style="font-size: 12px; text-align: left;">
+              <thead>
+                <tr>
+                  <th style="width: 36px; text-align: center;">#</th>
+                  <th>STOCK / SECTOR</th>
+                  <th style="text-align: right;">LTP (₹) / 1D</th>
+                  <th style="text-align: center;">⚡ ACTIVE CATALYST TYPE</th>
+                  <th style="color: var(--accent-cyan); min-width: 300px;">🔥 WHY THIS STOCK IS RISING (CATALYST REASON)
+                  </th>
+                  <th style="text-align: right; color: var(--accent-emerald);">🎯 TARGET (UPSIDE)</th>
+                  <th style="text-align: right; color: var(--accent-rose);">🛡️ STOPLOSS (SL)</th>
+                  <th style="text-align: center;">RISK:REWARD</th>
+                  <th style="text-align: center;">ACTION</th>
+                </tr>
+              </thead>
+              <tbody id="all-stocks-tbody">
+                <tr>
+                  <td colspan="9" style="text-align: center; padding: 36px; color: var(--text-muted);">
+                    Scanning active news catalysts and volume breakouts...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ====================================================
+           VIEW C: TARGET & STOPLOSS TRACK RECORD (AUDIT HISTORY)
+           ==================================================== -->
+      <div id="stock-tracker-view-container" style="display: none;">
+        <!-- Header Banner -->
+        <div class="news-header-banner" style="margin-bottom: 20px;">
+          <div class="news-banner-info">
+            <h2>🎯 AI Stock Target & Stoploss Track Record (Audit History)</h2>
+            <p>Verified, real-time audit trail of every stock suggested by AI. Tracks initial entry recommendation price
+              against actual market execution to determine whether Target was achieved or Stoploss was triggered.
+              Updated dynamically with live market fluctuations.</p>
+            <div style="margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <button class="btn-primary" onclick="loadStockTrackerData(true)">
+                ⚡ Refresh Track Record
+              </button>
+              <button class="btn-icon" onclick="resetStockTracker()"
+                style="font-size: 11px; padding: 6px 12px; color: var(--text-muted);">
+                🔄 Reset to Verified Seed Audit
+              </button>
+              <button class="btn-icon" onclick="switchStockMode('all')"
+                style="font-size: 11px; padding: 6px 12px; color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.4);">
+                ⚡ View Live Suggestions Table ➜
+              </button>
+            </div>
+          </div>
+          <div class="news-stats-row">
+            <div class="news-stat-chip">
+              <div class="val" id="trk-stat-total">--</div>
+              <div class="lbl">Total Tracked</div>
+            </div>
+            <div class="news-stat-chip">
+              <div class="val val-up" id="trk-stat-hits">--</div>
+              <div class="lbl">Targets Hit 🎯</div>
+            </div>
+            <div class="news-stat-chip">
+              <div class="val" style="color: var(--accent-rose);" id="trk-stat-sl">--</div>
+              <div class="lbl">Stoploss Cuts 🛑</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 KPI Performance Cards -->
+        <div class="tracker-kpi-grid">
+          <!-- KPI 1: Win Rate -->
+          <div class="tracker-kpi-card"
+            style="border-color: rgba(16, 185, 129, 0.4); background: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, var(--bg-surface) 100%);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Target Hit Rate (Win %)</span>
+              <span class="tracker-kpi-icon">🎯</span>
+            </div>
+            <div class="tracker-kpi-val" id="trk-kpi-winrate" style="color: var(--accent-emerald);">--%</div>
+            <div class="tracker-kpi-sub" id="trk-kpi-hit-ratio">-- Targets Hit / -- Closed</div>
+          </div>
+
+          <!-- KPI 2: Net Cumulative Gain -->
+          <div class="tracker-kpi-card"
+            style="border-color: rgba(99, 102, 241, 0.4); background: linear-gradient(180deg, rgba(99, 102, 241, 0.08) 0%, var(--bg-surface) 100%);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Cumulative Realized P&L</span>
+              <span class="tracker-kpi-icon">📈</span>
+            </div>
+            <div class="tracker-kpi-val" id="trk-kpi-return" style="color: #a5b4fc;">+--%</div>
+            <div class="tracker-kpi-sub">Sum of all closed trade gains & cuts</div>
+          </div>
+
+          <!-- KPI 3: Payoff & Profit Factor -->
+          <div class="tracker-kpi-card"
+            style="border-color: rgba(6, 182, 212, 0.4); background: linear-gradient(180deg, rgba(6, 182, 212, 0.08) 0%, var(--bg-surface) 100%);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Avg Gain vs Controlled SL</span>
+              <span class="tracker-kpi-icon">⚖️</span>
+            </div>
+            <div class="tracker-kpi-val" id="trk-kpi-payoff" style="color: var(--accent-cyan); font-size: 20px;">+--% /
+              ---%</div>
+            <div class="tracker-kpi-sub" id="trk-kpi-factor">Profit Factor: --x (Risk/Reward)</div>
+          </div>
+
+          <!-- KPI 4: Currently Active -->
+          <div class="tracker-kpi-card"
+            style="border-color: rgba(245, 158, 11, 0.4); background: linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, var(--bg-surface) 100%);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Currently Active Calls</span>
+              <span class="tracker-kpi-icon">⏳</span>
+            </div>
+            <div class="tracker-kpi-val" id="trk-kpi-active" style="color: var(--accent-amber);">-- Live</div>
+            <div class="tracker-kpi-sub">Fluctuating in real-time order book</div>
+          </div>
+        </div>
+
+        <!-- Filter Chips -->
+        <div class="news-controls-row" style="margin-bottom: 14px;">
+          <div class="category-chips-list" id="tracker-filter-chips">
+            <button class="cat-pill active" onclick="filterTrackerCategory('all')">
+              All Calls (<span id="trk-filter-all-cnt">--</span>)
+            </button>
+            <button class="cat-pill" onclick="filterTrackerCategory('target')">
+              🎯 Targets Hit (<span id="trk-filter-target-cnt">--</span>)
+            </button>
+            <button class="cat-pill" onclick="filterTrackerCategory('stoploss')">
+              🛑 Stoploss Cut (<span id="trk-filter-sl-cnt">--</span>)
+            </button>
+            <button class="cat-pill" onclick="filterTrackerCategory('active')">
+              ⏳ Currently Active (<span id="trk-filter-active-cnt">--</span>)
+            </button>
+          </div>
+        </div>
+
+        <!-- Track Record History Table -->
+        <div class="glass-card">
+          <div class="option-chain-container">
+            <table class="option-chain-table" style="font-size: 12px; text-align: left;">
+              <thead>
+                <tr>
+                  <th style="width: 36px; text-align: center;">#</th>
+                  <th>STOCK / SECTOR</th>
+                  <th style="text-align: center;">EXECUTION STATUS</th>
+                  <th style="text-align: right;">ENTRY LEVEL & DATE</th>
+                  <th style="text-align: right;">TARGET & SL PLAN</th>
+                  <th style="text-align: right; color: var(--accent-cyan);">EXIT / LIVE PRICE</th>
+                  <th style="text-align: right;">REALIZED P&L (%)</th>
+                  <th style="text-align: center;">DURATION</th>
+                  <th style="color: var(--accent-cyan); min-width: 260px;">WHY RECOMMENDED (CATALYST REASON)</th>
+                  <th style="text-align: center;">ACTION</th>
+                </tr>
+              </thead>
+              <tbody id="tracker-history-tbody">
+                <tr>
+                  <td colspan="10" style="text-align: center; padding: 36px; color: var(--text-muted);">
+                    Loading AI Target & Stoploss track record history...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Backtest Results Modal -->
+    <div class="modal-overlay" id="backtest-modal" style="display: none;">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <div class="modal-title" id="bt-modal-title">🧪 2-Year Historical Walk-Forward Backtest</div>
+          <button class="btn-close-modal" onclick="closeBacktestModal()">✕</button>
+        </div>
+        <div id="bt-modal-body">
+          <div class="loading-container">
+            <div class="spinner"></div>
+            <div>Simulating walk-forward trade executions across historical daily candles...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Dhan Broker Token & Feed Modal -->
+    <div class="modal-overlay" id="broker-modal" style="display: none;">
+      <div class="modal-content" style="max-width: 560px;">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+          <div style="font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+            <span>🔑</span> DhanHQ Live Broker Feed Configuration
+          </div>
+          <button class="btn-icon" onclick="closeBrokerModal()" style="font-size: 14px; padding: 4px 8px;">✕</button>
+        </div>
+
+        <div
+          style="font-size: 12px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 18px; background: rgba(99, 102, 241, 0.08); padding: 12px; border-radius: var(--radius-sm); border-left: 3px solid var(--accent-indigo);">
+          <strong>⚡ Sub-Second Tick Feeds:</strong> Broker APIs provide institutional <strong>50ms real-time
+            ticks</strong>. Under SEBI regulations, all Indian broker access tokens (Dhan, Zerodha, Upstox) expire daily
+          at 6:00 AM. Generate your daily free token from Dhan and paste it below.
+        </div>
+
+        <div style="margin-bottom: 14px;">
+          <label
+            style="display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px;">
+            Dhan Client ID (e.g. 1109085908):
+          </label>
+          <input type="text" id="input-dhan-client-id" class="stock-search-input-box"
+            style="width: 100%; padding: 10px 14px; background: #080c16; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: #fff; font-family: var(--font-mono); font-size: 13px;"
+            placeholder="Enter your 10-digit Dhan Client ID">
+        </div>
+
+        <div style="margin-bottom: 18px;">
+          <label
+            style="display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px;">
+            Today's Access Token (JWT):
+          </label>
+          <textarea id="input-dhan-token" rows="4"
+            style="width: 100%; padding: 10px 14px; background: #080c16; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: #fff; font-family: var(--font-mono); font-size: 11px; resize: vertical;"
+            placeholder="Paste today's generated DhanHQ Access Token (starts with eyJ...)"></textarea>
+          <div style="margin-top: 4px; font-size: 11px; color: var(--text-muted);">
+            💡 Get your token for free at: <a href="https://web.dhan.co" target="_blank"
+              style="color: var(--accent-cyan); text-decoration: underline;">web.dhan.co</a> ➔ Profile ➔ DhanHQ APIs ➔
+            Generate Access Token
+          </div>
+        </div>
+
+        <div id="broker-modal-msg"
+          style="display: none; padding: 10px; border-radius: var(--radius-sm); font-size: 12px; margin-bottom: 14px;">
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+          <button class="btn-icon" onclick="closeBrokerModal()" style="padding: 8px 16px;">Cancel</button>
+          <button class="btn-primary" id="btn-save-broker-token" onclick="submitBrokerToken()"
+            style="padding: 8px 18px;">
+            <span>⚡ Verify & Connect Feed</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trade History & P&L Statement Modal -->
+    <div class="modal-overlay" id="trade-history-modal" style="display: none;">
+      <div class="modal-content" style="max-width: 920px; max-height: 88vh; display: flex; flex-direction: column;">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+          <div style="font-size: 17px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+            <span>📜</span> Virtual Paper Trading Statement & Realized P&L Ledger
+          </div>
+          <button class="btn-icon" onclick="closeTradeHistoryModal()"
+            style="font-size: 14px; padding: 4px 8px;">✕</button>
+        </div>
+
+        <!-- Summary Statistics Row -->
+        <div
+          style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px;">
+          <div class="metric-box" style="padding: 12px;">
+            <div class="label">Total Net Realized P&L</div>
+            <div class="val-large" id="modal-th-net-pnl" style="font-size: 20px;">₹0.00</div>
+          </div>
+          <div class="metric-box" style="padding: 12px;">
+            <div class="label">Return on Capital</div>
+            <div class="val-large" id="modal-th-return-pct" style="font-size: 20px;">0.00%</div>
+          </div>
+          <div class="metric-box" style="padding: 12px;">
+            <div class="label">Win Rate</div>
+            <div class="val-large" id="modal-th-win-rate" style="font-size: 20px;">0.0%</div>
+          </div>
+          <div class="metric-box" style="padding: 12px;">
+            <div class="label">Win / Loss Trades</div>
+            <div class="val-large" id="modal-th-win-loss" style="font-size: 16px; color: var(--text-secondary);">0W / 0L
+            </div>
+          </div>
+        </div>
+
+        <!-- Scrollable Trades Table -->
+        <div
+          style="overflow-y: auto; flex: 1; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); margin-bottom: 16px; max-height: 380px;">
+          <table class="quant-table"
+            style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: right; font-family: var(--font-mono);">
+            <thead style="position: sticky; top: 0; background: #0c1222; z-index: 2;">
+              <tr>
+                <th style="padding: 10px; text-align: center;">#</th>
+                <th style="padding: 10px; text-align: left;">INSTRUMENT</th>
+                <th style="padding: 10px; text-align: center;">TYPE</th>
+                <th style="padding: 10px; text-align: center;">QTY</th>
+                <th style="padding: 10px; text-align: right;">ENTRY (₹ / TIME)</th>
+                <th style="padding: 10px; text-align: right;">EXIT (₹ / TIME)</th>
+                <th style="padding: 10px; text-align: left;">EXIT REASON</th>
+                <th style="padding: 10px; text-align: right;">REALIZED P&L (₹)</th>
+                <th style="padding: 10px; text-align: right;">P&L %</th>
+                <th style="padding: 10px; text-align: center;">RESULT</th>
+              </tr>
+            </thead>
+            <tbody id="trade-history-tbody">
+              <tr>
+                <td colspan="10" style="text-align: center; padding: 32px; color: var(--text-muted);">
+                  Loading executed trade history...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 14px;">
+          <button class="btn-icon" onclick="resetPaperTrading()"
+            style="color: var(--accent-rose); border-color: rgba(244, 63, 94, 0.3); font-size: 12px; padding: 6px 12px;">
+            🔄 Reset Capital to ₹1,00,000
+          </button>
+          <button class="btn-primary" onclick="closeTradeHistoryModal()" style="padding: 8px 24px;">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Option Greeks & Optimal Strike Guide Modal -->
+    <div class="modal-overlay" id="greeks-guide-modal" style="display: none;">
+      <div class="modal-content" style="max-width: 920px; max-height: 88vh; display: flex; flex-direction: column;">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+          <div style="font-size: 17px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+            <span>📐</span> Option Greeks Formulas & Buyer's Intelligence Guide
+          </div>
+          <button class="btn-icon" onclick="closeGreeksGuideModal()"
+            style="font-size: 14px; padding: 4px 8px;">✕</button>
+        </div>
+
+        <div style="overflow-y: auto; flex: 1; padding-right: 6px;">
+          <!-- Core Greek Formulas Grid -->
+          <div
+            style="font-size: 13px; font-weight: 700; color: var(--accent-cyan); margin-bottom: 12px; display: flex; align-items: center; gap: 6px;">
+            <span>⚡</span> Black-Scholes-Merton Greek Equations (Heavily Used in NSE Option Premiums)
+          </div>
+
+          <div
+            style="display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 14px; margin-bottom: 20px;">
+            <!-- Delta -->
+            <div
+              style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: var(--radius-sm); padding: 14px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 700; color: var(--accent-emerald); font-size: 14px;">Δ Delta (Directional
+                  Speed)</span>
+                <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald);">Calls: 0
+                  to
+                  +1 | Puts: -1 to 0</span>
+              </div>
+              <div
+                style="font-family: var(--font-mono); font-size: 12px; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 4px; margin-bottom: 8px; color: #e2e8f0; border-left: 3px solid var(--accent-emerald);">
+                Δ_CE = N(d₁) &nbsp;|&nbsp; Δ_PE = N(d₁) - 1
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.5;">
+                Measures how much the option price changes for a ₹1 move in NIFTY spot. At ATM, Delta is
+                <strong>0.50</strong> (NIFTY moves 50 pts ➔ option gains ₹25).
+              </div>
+            </div>
+
+            <!-- Gamma -->
+            <div
+              style="background: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: var(--radius-sm); padding: 14px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 700; color: var(--accent-purple); font-size: 14px;">Γ Gamma (Delta
+                  Acceleration)</span>
+                <span class="badge" style="background: rgba(139, 92, 246, 0.2); color: var(--accent-purple);">Maximum at
+                  ATM</span>
+              </div>
+              <div
+                style="font-family: var(--font-mono); font-size: 12px; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 4px; margin-bottom: 8px; color: #e2e8f0; border-left: 3px solid var(--accent-purple);">
+                Γ = N'(d₁) / [ S · σ · √T ]
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.5;">
+                <strong>The Option Buyer's Secret Weapon.</strong> Measures how fast Delta grows. When NIFTY rallies,
+                Gamma pushes your Delta from 0.50 ➔ 0.70 ➔ 0.90, creating non-linear explosive compounding!
+              </div>
+            </div>
+
+            <!-- Theta -->
+            <div
+              style="background: rgba(244, 63, 94, 0.05); border: 1px solid rgba(244, 63, 94, 0.25); border-radius: var(--radius-sm); padding: 14px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 700; color: var(--accent-rose); font-size: 14px;">Θ Theta (Daily Time
+                  Decay)</span>
+                <span class="badge" style="background: rgba(244, 63, 94, 0.2); color: var(--accent-rose);">Buyer Decay /
+                  Day</span>
+              </div>
+              <div
+                style="font-family: var(--font-mono); font-size: 12px; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 4px; margin-bottom: 8px; color: #e2e8f0; border-left: 3px solid var(--accent-rose);">
+                Θ ≈ - [S · N'(d₁) · σ] / (2√T · 365)
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.5;">
+                The rent you pay each day for holding an option. Accelerates exponentially in the final 3 days before
+                expiry, completely destroying cheap OTM options.
+              </div>
+            </div>
+
+            <!-- Vega -->
+            <div
+              style="background: rgba(6, 182, 212, 0.05); border: 1px solid rgba(6, 182, 212, 0.25); border-radius: var(--radius-sm); padding: 14px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 700; color: var(--accent-cyan); font-size: 14px;">ν Vega (Volatility
+                  Sensitivity)</span>
+                <span class="badge" style="background: rgba(6, 182, 212, 0.2); color: var(--accent-cyan);">₹ per 1% IV
+                  shift</span>
+              </div>
+              <div
+                style="font-family: var(--font-mono); font-size: 12px; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 4px; margin-bottom: 8px; color: #e2e8f0; border-left: 3px solid var(--accent-cyan);">
+                ν = [S · √T · N'(d₁)] / 100
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.5;">
+                Measures premium increase when India VIX rises by 1%. High Vega protects you if volatility explodes, but
+                hurts during post-event IV crush.
+              </div>
+            </div>
+          </div>
+
+          <!-- Which Option is Good to Buy Guide -->
+          <div
+            style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: var(--radius-sm); padding: 16px; margin-bottom: 16px;">
+            <div
+              style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+              <span>🎯</span> Quant Guide: Which Option Strike Should You Buy?
+            </div>
+            <div
+              style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; font-size: 12px;">
+              <div
+                style="border-left: 3px solid var(--accent-emerald); padding-left: 10px; background: rgba(16, 185, 129, 0.03); padding: 10px; border-radius: 4px;">
+                <strong style="color: var(--accent-emerald);">1. The Sweet Spot (ATM / Delta 0.48 - 0.55):</strong><br>
+                <span
+                  style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">Highest
+                  Gamma-to-Theta efficiency. You get the maximum explosive upside acceleration per rupee of decay paid.
+                  Ideal for intraday scalpers and momentum buyers.</span>
+              </div>
+              <div
+                style="border-left: 3px solid var(--accent-blue); padding-left: 10px; background: rgba(59, 130, 246, 0.03); padding: 10px; border-radius: 4px;">
+                <strong style="color: var(--accent-blue);">2. Solid Trend (Slight ITM / Delta 0.55 - 0.70):</strong><br>
+                <span
+                  style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">Moves
+                  strongly with spot price (₹0.60 - ₹0.70 per ₹1 move) with significantly lower percentage Theta decay.
+                  Best for directional swing trades.</span>
+              </div>
+              <div
+                style="border-left: 3px solid var(--accent-rose); padding-left: 10px; background: rgba(244, 63, 94, 0.03); padding: 10px; border-radius: 4px;">
+                <strong style="color: var(--accent-rose);">3. The OTM Theta Trap (Delta &lt; 0.30) — AVOID:</strong><br>
+                <span
+                  style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">Cheap
+                  premium (e.g. ₹20-₹40) looks tempting, but has near-zero Gamma and 80%+ time decay. Even if NIFTY
+                  moves
+                  30 points in your direction, Theta decay often causes net loss!</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Option Buyer Execution & Protection Architecture -->
+          <div
+            style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: var(--radius-sm); padding: 16px; margin-bottom: 16px;">
+            <div
+              style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+              <span>🛡️</span> Institutional Option Buying Rules (Engine Architecture)
+            </div>
+            <div
+              style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; font-size: 12px;">
+              <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; border-left: 3px solid var(--accent-amber);">
+                <strong style="color: var(--accent-amber);">⏱️ 10-Minute Theta Time-Stop:</strong><br>
+                <span style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">
+                  If NIFTY consolidates sideways for 10 minutes (600s) without reaching at least +8% profit, the trade is automatically liquidated to prevent Theta bleed.
+                </span>
+              </div>
+              <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; border-left: 3px solid var(--accent-emerald);">
+                <strong style="color: var(--accent-emerald);">🛡️ Breakeven Lock at +18%:</strong><br>
+                <span style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">
+                  As soon as the option premium gains +18%, Stop-Loss moves directly to the Entry Price. Capital risk becomes ₹0 immediately!
+                </span>
+              </div>
+              <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; border-left: 3px solid var(--accent-purple);">
+                <strong style="color: var(--accent-purple);">🚀 Multi-Stage Gamma Trailing:</strong><br>
+                <span style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">
+                  At +30% gain ➔ locks +18% profit guaranteed. At +45% gain ➔ locks +30% profit and target extends to +60% to ride Gamma runners.
+                </span>
+              </div>
+              <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; border-left: 3px solid var(--accent-rose);">
+                <strong style="color: var(--accent-rose);">⚡ Panic Writer Unwinding Detection:</strong><br>
+                <span style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">
+                  Triggers rapid sniper entries when ATM Call or Put writers dump &ge; 8,000 contracts in live OI, signaling institutional surrender.
+                </span>
+              </div>
+              <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; border-left: 3px solid var(--accent-cyan);">
+                <strong style="color: var(--accent-cyan);">⚠️ IV Crush & Chop Zone Shields:</strong><br>
+                <span style="color: var(--text-secondary); line-height: 1.5; display: inline-block; margin-top: 4px;">
+                  Midday (11:30 AM – 1:15 PM) requires &ge; 85% confluence to avoid false breakouts. Drops in India VIX (&le; -2.5%) trigger IV crush warnings.
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          style="display: flex; justify-content: flex-end; border-top: 1px solid var(--border-subtle); padding-top: 14px;">
+          <button class="btn-primary" onclick="closeGreeksGuideModal()" style="padding: 8px 28px;">Got It</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================================
+       🧠 AI GROWTH THESIS & RESEARCH ENGINE MODAL
+       Comprehensive 4-Pillar deep dive for any selected stock
+       ======================================================== -->
+    <div class="modal-overlay" id="ai-growth-modal" style="display: none;">
+      <div class="modal-content" style="max-width: 900px; max-height: 90vh; display: flex; flex-direction: column;">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
+          <div style="font-size: 17px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+            <span>🧠</span> AI Multi-Pillar Research & Price Growth Thesis — <span id="modal-thesis-symbol"
+              style="color: var(--accent-cyan); font-family: var(--font-mono);">--</span>
+          </div>
+          <button class="btn-icon" onclick="closeGrowthThesisModal()"
+            style="font-size: 14px; padding: 4px 8px;">✕</button>
+        </div>
+
+        <div style="overflow-y: auto; flex: 1; padding-right: 6px;">
+          <!-- Modal Hero Target/Stoploss Row -->
+          <div class="ai-target-hero-row" style="margin-bottom: 18px;">
+            <div class="ai-hero-stat target-box">
+              <div class="ai-hero-lbl">🎯 Projected Target</div>
+              <div class="ai-hero-val" id="modal-thesis-target">₹--</div>
+              <div class="ai-hero-sub" id="modal-thesis-target-pct">+--% Upside</div>
+            </div>
+            <div class="ai-hero-stat sl-box">
+              <div class="ai-hero-lbl">🛡️ Protective Stoploss</div>
+              <div class="ai-hero-val" id="modal-thesis-sl">₹--</div>
+              <div class="ai-hero-sub" id="modal-thesis-sl-pct">---% Invalidation</div>
+            </div>
+            <div class="ai-hero-stat rr-box">
+              <div class="ai-hero-lbl">⚖️ Risk : Reward</div>
+              <div class="ai-hero-val" id="modal-thesis-rr">1 : --</div>
+              <div class="ai-hero-sub" id="modal-thesis-horizon">1 - 3 Weeks</div>
+            </div>
+            <div class="ai-hero-stat prob-box">
+              <div class="ai-hero-lbl">📊 Win Probability</div>
+              <div class="ai-hero-val" id="modal-thesis-winprob">--%</div>
+              <div class="ai-hero-sub" id="modal-thesis-score">Conviction: -- / 100</div>
+            </div>
+          </div>
+
+          <!-- Unified Narrative Thesis -->
+          <div class="ai-thesis-narrative-box" style="margin-bottom: 18px;">
+            <div class="thesis-header">
+              <span style="color: var(--accent-cyan); font-weight: 700;">💡 Unified AI Growth Thesis & Reason for Price
+                Growth:</span>
+            </div>
+            <div class="thesis-body" id="modal-thesis-summary" style="font-size: 13px; line-height: 1.6;">
+              Loading AI growth thesis...
+            </div>
+          </div>
+
+          <!-- 4 Pillars Modal Cards -->
+          <div class="ai-research-pillars-grid">
+            <!-- Pillar 1 -->
+            <div class="pillar-card fund-pillar">
+              <div class="pillar-header">
+                <div class="pillar-icon">🏛️</div>
+                <div>
+                  <div class="pillar-title">1. Fundamental Valuation Check</div>
+                  <div class="pillar-status" id="modal-pillar-fund-status">--</div>
+                </div>
+              </div>
+              <div class="pillar-desc" id="modal-pillar-fund-desc">--</div>
+            </div>
+
+            <!-- Pillar 2 -->
+            <div class="pillar-card results-pillar">
+              <div class="pillar-header">
+                <div class="pillar-icon">📑</div>
+                <div>
+                  <div class="pillar-title">2. NSE Quarterly Results Check</div>
+                  <div class="pillar-status" id="modal-pillar-results-status">--</div>
+                </div>
+              </div>
+              <div class="pillar-desc" id="modal-pillar-results-desc">--</div>
+            </div>
+
+            <!-- Pillar 3 -->
+            <div class="pillar-card news-pillar">
+              <div class="pillar-header">
+                <div class="pillar-icon">📰</div>
+                <div>
+                  <div class="pillar-title">3. Institutional News & Broker Calls Check</div>
+                  <div class="pillar-status" id="modal-pillar-news-status">--</div>
+                </div>
+              </div>
+              <div class="pillar-desc" id="modal-pillar-news-desc">--</div>
+            </div>
+
+            <!-- Pillar 4 -->
+            <div class="pillar-card tech-pillar">
+              <div class="pillar-header">
+                <div class="pillar-icon">📦</div>
+                <div>
+                  <div class="pillar-title">4. Institutional Delivery & Technicals Check</div>
+                  <div class="pillar-status" id="modal-pillar-tech-status">--</div>
+                </div>
+              </div>
+              <div class="pillar-desc" id="modal-pillar-tech-desc">--</div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 14px; margin-top: 12px;">
+          <button class="btn-icon" onclick="openChartFromModal()"
+            style="color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.4); font-size: 12px; padding: 7px 14px;">
+            📈 Open Live Stock Candlestick Chart
+          </button>
+          <button class="btn-primary" onclick="closeGrowthThesisModal()" style="padding: 8px 24px;">Close
+            Thesis</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Real-Time Target & Stoploss Hit Alert Toast Container -->
+    <div id="tracker-toast-container"
+      style="position: fixed; top: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; max-width: 380px; pointer-events: none;">
+    </div>
+
+    <script src="/static/app.js?v=3.7"></script>
+</body>
+
+</html>
