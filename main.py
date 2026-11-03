@@ -1,7 +1,10 @@
 """
-Main Orchestrator & Live Console Dashboard
+Main Orchestrator & Live Console Dashboard  -- v2
 Runs live NIFTY Open Interest tracking, Strategy Signals, and Paper Trading.
 Supports DhanHQ Official Live Feed, NSE Web Feed, and Simulation Mode.
+
+Changes vs v1: lot size 65, signal logging (signal_log.csv), stale-feed guard,
+safer position LTP lookup, OI flow line on the dashboard, chart analyzer allow_stale in demo.
 """
 
 import os
@@ -9,7 +12,7 @@ import sys
 import time
 import argparse
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional
 from dotenv import load_dotenv
 
 # Ensure UTF-8 output encoding on Windows consoles
@@ -32,6 +35,11 @@ from paper_trader import PaperTrader
 from chart_patterns import ChartPatternAnalyzer
 from news_sentiment import NewsSentimentAnalyzer
 from market_intelligence import MarketIntelligence
+from signal_logger import SignalLogger
+
+LOT_SIZE = 65                 # NIFTY lot size (check NSE circulars; it has changed before)
+STALE_WARN_SEC = 180          # warn if no new option-chain snapshot for this long
+STALE_BLOCK_SEC = 300         # block NEW entries if no new snapshot for this long
 
 
 def format_num(val: float) -> str:
@@ -44,48 +52,58 @@ def format_num(val: float) -> str:
 
 
 def get_position_current_ltp(pos: dict, table_data: list) -> float:
-    """Finds the current real-time market price of the held position's strike."""
+    """Current market price of the held strike. Remembers the last good price so a missing
+    strike does not silently freeze P&L at the entry price."""
     try:
         strike_num = int(pos["instrument"].split()[1])
         match = next((s for s in table_data if int(s["strike"]) == strike_num), None)
         if match:
-            return match["ce_ltp"] if pos["type"] == "CE" else match["pe_ltp"]
+            ltp = match["ce_ltp"] if pos["type"] == "CE" else match["pe_ltp"]
+            if ltp and ltp > 0:
+                pos["last_ltp"] = ltp
+                return ltp
     except Exception:
         pass
-    return pos["entry_price"]
+    return pos.get("last_ltp", pos["entry_price"])
 
 
 def display_dashboard(
-    analysis: dict, 
-    signal_info: dict, 
-    trader: PaperTrader, 
-    chart_info: Optional[dict] = None, 
+    analysis: dict,
+    signal_info: dict,
+    trader: PaperTrader,
+    chart_info: Optional[dict] = None,
     news_info: Optional[dict] = None,
     market_context: Optional[dict] = None,
-    source_label: str = "LIVE"
+    source_label: str = "LIVE",
+    stale_sec: float = 0.0,
 ):
-    """Renders a comprehensive live terminal dashboard with OI, MTF Chart Patterns, VIX, Heavyweights & News."""
+    """Renders a live terminal dashboard with OI, MTF Chart Patterns, VIX, Heavyweights & News."""
     print("\n" + "=" * 80)
     print(f" 📈 NIFTY LIVE ALGO TRADING & OPEN INTEREST  [{source_label}]")
     print("=" * 80)
-    
+
     spot = analysis["spot_price"]
     pcr = analysis["pcr"]
     max_pain = analysis["max_pain"]
     sentiment = analysis["sentiment"]
     timestamp = analysis["timestamp"]
     expiry = analysis.get("expiry") or analysis.get("current_expiry", "")
-    
+    dte = analysis.get("days_to_expiry")
+    dte_str = f" (DTE {dte})" if dte is not None else ""
+
     lat_ms = analysis.get("latency_ms", 0)
     lat_str = f"  |  ⚡ Latency: {lat_ms}ms" if lat_ms > 0 else ""
-    print(f" Timestamp  : {timestamp}  |  Expiry: {expiry}{lat_str}")
+    print(f" Timestamp  : {timestamp}  |  Expiry: {expiry}{dte_str}{lat_str}")
+    if stale_sec >= STALE_WARN_SEC:
+        print(f" ⚠️  DATA STALE  : no new option-chain snapshot for {int(stale_sec)}s"
+              f"{' — NEW ENTRIES BLOCKED' if stale_sec >= STALE_BLOCK_SEC else ''}")
     print(f" NIFTY Spot : {spot:,.2f}  |  ATM Strike: {analysis['atm_strike']}")
     print(f" PCR        : {pcr:.3f}   |  Max Pain  : {max_pain}")
     print(f" Resistance : {analysis['resistance_strike']} (Max CE OI) | Support: {analysis['support_strike']} (Max PE OI)")
-    print(f" OI Sentiment : {sentiment}")
+    print(f" OI Sentiment : {sentiment}  |  Day OI imbalance: {analysis.get('day_imbalance', 0.0):+.2f}")
     print("-" * 80)
 
-    # 1. Market Intelligence: India VIX, Heavyweights, and Session Filter
+    # 1. Market Intelligence
     if market_context:
         vix = market_context.get("vix", {})
         hw = market_context.get("heavyweights", {})
@@ -93,7 +111,7 @@ def display_dashboard(
 
         vix_str = f"{vix.get('badge', '')} | Δ: {vix.get('change_pct', 0.0):+.2f}% | Bias: {vix.get('bias', '')}"
         print(f" 📊 INDIA VIX      : {vix_str}")
-        
+
         st = hw.get("stocks", {})
         rel_str = f"RELIANCE: {st.get('RELIANCE', {}).get('pct', 0.0):+.2f}%"
         icici_str = f"ICICI: {st.get('ICICIBANK', {}).get('pct', 0.0):+.2f}%"
@@ -103,7 +121,7 @@ def display_dashboard(
         print(f" ⏰ SESSION REGIME : {sess.get('badge', '')} | {sess.get('note', '')}")
         print("-" * 80)
 
-    # 2. OI Velocity & Rapid Shift Tracking
+    # 2. OI flow (windowed)
     oi_vel = analysis.get("oi_velocity")
     if oi_vel:
         badge = oi_vel.get("badge", "⚪ STABLE")
@@ -111,25 +129,33 @@ def display_dashboard(
         d_pe = format_num(oi_vel.get("delta_pe_oi", 0))
         d_spot = oi_vel.get("delta_spot", 0.0)
         fast_flag = "⚡ [FAST MOVE TRIGGERED]" if oi_vel.get("fast_oi_trigger") else ""
-        print(f" ⚡ OI VELOCITY    : {badge} {fast_flag}")
+        win_min = int(oi_vel.get("window_sec", 300) / 60)
+        print(f" ⚡ OI FLOW ({win_min}m)  : {badge} {fast_flag}")
         print(f"    Shift Metrics  : Δ Spot: {d_spot:+.1f} pts | Δ CE OI: {d_ce} | Δ PE OI: {d_pe}")
+        if "flow_imbalance" in oi_vel:
+            print(f"    Near-ATM Flow  : imbalance {oi_vel['flow_imbalance']:+.2f} | "
+                  f"{oi_vel.get('flow_pct', 0.0):.2f}% of total OI")
         print(f"    Shift Detail   : {oi_vel.get('description', '')}")
         print("-" * 80)
 
-    # 3. Multi-Timeframe Chart Patterns & Technicals
+    # 3. Chart patterns & technicals
     if chart_info:
         ind = chart_info.get("indicators", {})
         mtf = chart_info.get("mtf", {})
         mtf_badge = mtf.get("badge", "") if mtf else ""
-        print(f" 🕯️  CHART PATTERNS: {chart_info['sentiment']} ({chart_info['confidence']}%) | {mtf_badge}")
+        print(f" 🕯️  CHART PATTERNS: {chart_info.get('sentiment', 'N/A')} ({chart_info.get('confidence', 0)}%) | {mtf_badge}")
         if mtf and mtf.get("desc"):
             print(f"    MTF Context    : {mtf.get('desc', '')}")
-        print(f"    5m Formations  : {chart_info['summary']}")
+        print(f"    5m Formations  : {chart_info.get('summary', '')}")
         if ind:
-            print(f"    5m Technicals  : EMA(9): ₹{ind.get('ema9', 0):,.1f} | EMA(21): ₹{ind.get('ema21', 0):,.1f} | VWAP: ₹{ind.get('vwap', 0):,.1f} | RSI: {ind.get('rsi', 0):.1f}")
+            vw = "VWAP" if ind.get("vwap_is_volume_weighted") else "AVWAP*"
+            print(f"    5m Technicals  : EMA(9): ₹{ind.get('ema9', 0):,.1f} | EMA(21): ₹{ind.get('ema21', 0):,.1f} | "
+                  f"{vw}: ₹{ind.get('vwap', 0):,.1f} | RSI: {ind.get('rsi', 0):.1f} | ATR: {ind.get('atr', 0):.1f}")
+            if not ind.get("vwap_is_volume_weighted"):
+                print("    (*AVWAP = equal-weighted session anchor: index feed has no volume)")
         print("-" * 80)
 
-    # 4. Breaking News Flow & Sentiment Catalyst
+    # 4. News
     if news_info:
         n_badge = news_info.get("sentiment_badge", "⚪ NEUTRAL")
         n_score = news_info.get("score", 0.0)
@@ -141,8 +167,8 @@ def display_dashboard(
         if alerts:
             print(f"    Fast Catalyst  : {alerts[0][:72] + '...' if len(alerts[0]) > 72 else alerts[0]}")
         print("-" * 80)
-    
-    # 5. Algo Strategy Signal with Confluence & Accuracy Filters
+
+    # 5. Algo signal
     sig = signal_info["signal"]
     sig_icon = "🟢" if "CE" in sig else ("🔴" if "PE" in sig else "⚪")
     conf = signal_info.get("confluence_pct", 50)
@@ -156,32 +182,29 @@ def display_dashboard(
         mode_tag = "STANDARD CONFLUENCE"
 
     print(f" 🎯 ALGO SIGNAL   : {sig_icon} [{sig}] | {mode_tag} | Confluence: {conf}%")
+    print(f"    Scores         : Bull {signal_info.get('bullish_score', 0)} | Bear {signal_info.get('bearish_score', 0)} | "
+          f"Pillars B{signal_info.get('pillars_bull', 0)}/4 R{signal_info.get('pillars_bear', 0)}/4")
     print(f"    Execution Target: {signal_info.get('instrument', 'None')} @ ₹{signal_info.get('estimated_entry_price', 0.0):.2f}")
     print(f"    Reasoning      : {signal_info['reason']}")
     print("-" * 80)
 
-    # 6. Option Chain Focus Table around ATM
+    # 6. Option chain table
     print(f"{'CE OI':>10} | {'CE Chg OI':>11} | {'CE LTP':>8} | {'STRIKE':^8} | {'PE LTP':>8} | {'PE Chg OI':>11} | {'PE OI':>10}")
     print("-" * 80)
-    
+
     table_rows = analysis.get("table_data", [])
     atm = analysis["atm_strike"]
-    
+
     for row in table_rows:
         strike = int(row["strike"])
         is_atm = "🎯" if strike == atm else "  "
-        ce_oi_str = format_num(row["ce_oi"])
-        ce_chg_str = format_num(row["ce_chg_oi"])
-        pe_chg_str = format_num(row["pe_chg_oi"])
-        pe_oi_str = format_num(row["pe_oi"])
-
         print(
-            f"{ce_oi_str:>10} | {ce_chg_str:>11} | {row['ce_ltp']:>8.2f} | "
-            f"{is_atm}{strike:^6} | {row['pe_ltp']:>8.2f} | {pe_chg_str:>11} | {pe_oi_str:>10}"
+            f"{format_num(row['ce_oi']):>10} | {format_num(row['ce_chg_oi']):>11} | {row['ce_ltp']:>8.2f} | "
+            f"{is_atm}{strike:^6} | {row['pe_ltp']:>8.2f} | {format_num(row['pe_chg_oi']):>11} | {format_num(row['pe_oi']):>10}"
         )
 
     print("-" * 80)
-    # 7. Active Position Management with Breakeven & Trailing SL
+    # 7. Active position
     if trader.current_position:
         pos = trader.current_position
         curr_ltp = get_position_current_ltp(pos, table_rows)
@@ -191,7 +214,8 @@ def display_dashboard(
         print(f" 💼 ACTIVE POSITION: {pos['instrument']} x {pos['qty']} [{be_status}{trail_stage}]")
         print(f"    Entry: ₹{pos['entry_price']:.2f} | Peak: ₹{pos.get('peak_price', curr_ltp):.2f} | Current: ₹{curr_ltp:.2f} | "
               f"P&L: ₹{pos_status['unrealized_pnl']:+,.2f} ({pos_status['pnl_percentage']:+,.2f}%)")
-        print(f"    Current Stop-Loss: ₹{pos['stop_loss']:.2f} | Target: ₹{pos['target']:.2f}")
+        print(f"    Current Stop-Loss: ₹{pos['stop_loss']:.2f} | Target: ₹{pos['target']:.2f} | "
+              f"Time-stop in: {pos_status['time_stop_remaining_sec']}s")
     else:
         print(" 💼 ACTIVE POSITION: None (Awaiting high-probability confluence confirmation)")
 
@@ -202,11 +226,13 @@ def display_dashboard(
 def main():
     parser = argparse.ArgumentParser(description="Live NIFTY Algo Trading & OI System")
     parser.add_argument("--interval", type=int, default=5, help="Refresh interval in seconds (default: 5)")
-    parser.add_argument("--fast", action="store_true", help="High-speed mode: refreshes option chain every 3 seconds")
+    parser.add_argument("--fast", action="store_true", help="High-speed mode: refreshes every 3 seconds")
     parser.add_argument("--once", action="store_true", help="Run a single snapshot and exit")
     parser.add_argument("--demo", action="store_true", help="Force demo/simulation mode")
     parser.add_argument("--spot", type=float, default=22880.0, help="Initial NIFTY spot price for demo (default: 22880.0)")
     parser.add_argument("--source", choices=["auto", "dhan", "nse"], default="nse", help="Data source provider (default: nse)")
+    parser.add_argument("--log-file", default="signal_log.csv", help="CSV file for signal/feature logging")
+    parser.add_argument("--no-log", action="store_true", help="Disable signal logging")
     args = parser.parse_args()
 
     if args.fast:
@@ -214,18 +240,17 @@ def main():
 
     analyzer = OIAnalyzer()
     strategy = OIStrategy()
-    trader = PaperTrader(initial_capital=100000.0, lot_size=50)
-    chart_analyzer = ChartPatternAnalyzer()
+    trader = PaperTrader(initial_capital=100000.0, lot_size=LOT_SIZE, state_file="paper_state.json")
+    chart_analyzer = ChartPatternAnalyzer(allow_stale=args.demo)
     news_analyzer = NewsSentimentAnalyzer()
     market_intel = MarketIntelligence()
+    sig_logger = None if args.no_log else SignalLogger(args.log_file)
 
-    # Initialize Dhan and NSE fetchers
     dhan = DhanFetcher()
     nse = NSEFetcher(symbol="NIFTY", use_mock_on_failure=args.demo)
     if args.spot:
         nse._mock_spot = args.spot
 
-    # Determine data source
     use_dhan = False
     if args.source == "dhan":
         use_dhan = True
@@ -246,9 +271,16 @@ def main():
         nse.prewarm()
         print("✅ Session pre-warmed! Option chain ready for fast streaming.")
 
-    print(f"⏱️  Refresh Speed: Every {args.interval}s (Run with --fast for 3s refresh)\n")
+    print(f"⏱️  Refresh Speed: Every {args.interval}s (Run with --fast for 3s refresh)")
+    if sig_logger:
+        print(f"📝 Logging decisions to {args.log_file}")
+    print("ℹ️  OI flow signals need ~1 minute of history to warm up.\n")
+
     fail_count = 0
     fallback_to_demo = False
+    last_seq = None
+    last_new_ts = time.time()
+
     while True:
         try:
             t_fetch_start = time.time()
@@ -279,6 +311,7 @@ def main():
                     print("\n⚠️  Live feeds unavailable (Market closed / Dhan Data API not subscribed).")
                     print("🔄 Switching to realistic SIMULATION / DEMO MODE to demonstrate algo trading & OI...\n")
                     fallback_to_demo = True
+                    chart_analyzer.allow_stale = True
                     raw_data = nse.get_mock_data()
                 else:
                     print(f"Retrying in {args.interval}s...")
@@ -297,24 +330,32 @@ def main():
 
             analysis["latency_ms"] = int((time.time() - t_fetch_start) * 1000)
 
-            # Analyze Multi-Timeframe (15m Macro Trend + 5m Action)
+            # Track data freshness (live feeds only)
+            seq = analysis.get("snapshot_seq")
+            if seq != last_seq:
+                last_seq = seq
+                last_new_ts = time.time()
+            stale_sec = 0.0 if is_sim else time.time() - last_new_ts
+
             chart_info = chart_analyzer.analyze_multi_timeframe()
-
-            # Analyze real-time Indian Financial Market News & Breaking Catalysts
             news_info = news_analyzer.analyze_news_sentiment()
-
-            # Analyze India VIX Volatility Regime, Top Heavyweights & Session Regime
             market_context = market_intel.get_market_intelligence_context()
 
-            # Evaluate strategy with multi-factor confluence and fast-trigger capability
             signal_info = strategy.evaluate_signal(
-                analysis, 
-                chart_analysis=chart_info, 
-                news_analysis=news_info, 
-                market_context=market_context
+                analysis,
+                chart_analysis=chart_info,
+                news_analysis=news_info,
+                market_context=market_context,
             )
-            
-            # Determine correct market price for position management
+
+            # Never open NEW trades on a stale feed
+            if stale_sec >= STALE_BLOCK_SEC and not trader.current_position and signal_info["signal"] != "HOLD":
+                signal_info = {**signal_info, "signal": "HOLD",
+                               "reason": f"Blocked: option-chain data stale for {int(stale_sec)}s."}
+
+            if sig_logger:
+                sig_logger.log(signal_info)
+
             if trader.current_position:
                 curr_eval_price = get_position_current_ltp(trader.current_position, analysis["table_data"])
             else:
@@ -323,13 +364,14 @@ def main():
             trade_action = trader.process_signal(signal_info, curr_eval_price)
 
             display_dashboard(
-                analysis, 
-                signal_info, 
-                trader, 
-                chart_info=chart_info, 
-                news_info=news_info, 
-                market_context=market_context, 
-                source_label=active_label
+                analysis,
+                signal_info,
+                trader,
+                chart_info=chart_info,
+                news_info=news_info,
+                market_context=market_context,
+                source_label=active_label,
+                stale_sec=stale_sec,
             )
 
             if trade_action:

@@ -1,420 +1,477 @@
 """
-NIFTY Algorithmic Trading Strategy Engine
-Synthesizes Live Open Interest (OI) Dynamics WITH Real-Time Chart Patterns & Price Action:
-- Candlestick Formations (Hammer, Engulfing, Morning/Evening Star, Pin Bars)
-- Classical Chart Patterns (Double Top/Bottom, Head & Shoulders, Day Range Breakout)
-- Indicators (EMA Crossover, VWAP Institutional Benchmark, RSI 14)
-- Live Derivatives OI (PCR, Put/Call writing ratio, Max Pain)
+NIFTY Algorithmic Trading Strategy Engine -- v2
+
+Works with oi_analyzer.py v2 (windowed OI flow) and your existing main.py / paper_trader.py.
+Return dict keeps every key the old version returned, plus a few extras.
+
+What changed vs v1
+------------------
+* Negative-OI bug fixed: uses normalized imbalance, not ratio comparisons.
+* No more free "bearish +1" when EMA/VWAP data is missing or neutral. Trades need chart data.
+* Scoring is order-independent: contributions are collected, penalties applied once at the end.
+* Derivatives pillar is MANDATORY: OI flow must confirm (price-only setups are skipped).
+* confluence_pct is now real: it gates entries (it used to be a cosmetic floor).
+* Fast triggers no longer bypass the chop-zone filter; they only get a slightly lower bar.
+* Signal must persist across N distinct data snapshots (not N loop ticks) + flip cooldown.
+* Chart patterns/news are down-weighted and capped (weak evidence at this horizon).
+* Entry price uses ask (if the feed provides it) + slippage.
+* Expiry-day / broad-unwinding / warm-up make the bar higher.
+* Returns a flat `features` dict so you can log every decision and train on it later.
 """
 
+import time
 from typing import Dict, Any, Optional, List
 
 
+def _imb(pe_val: float, ce_val: float) -> float:
+    d = abs(pe_val) + abs(ce_val)
+    return (pe_val - ce_val) / d if d else 0.0
+
+
 class OIStrategy:
-    def __init__(self, pcr_bullish_threshold: float = 1.15, pcr_bearish_threshold: float = 0.85):
+    # ---- weights / caps (tune from your logs) -----------------------------
+    W_CANDLE = 1
+    W_FORMATION = 2
+    CAP_CANDLE = 3
+    CAP_FORMATION = 4
+    BASE_MIN_SCORE = 7
+    FAST_MIN_SCORE = 6
+    CHOP_MIN_SCORE = 8
+    CHOP_FAST_MIN_SCORE = 7
+    BASE_MIN_CONF = 75
+    CHOP_MIN_CONF = 85
+    DOMINANCE = 3
+
+    def __init__(
+        self,
+        pcr_bullish_threshold: float = 1.15,
+        pcr_bearish_threshold: float = 0.85,
+        confirm_snapshots: int = 2,
+        flip_cooldown_sec: int = 300,
+        entry_slippage_pct: float = 0.3,
+    ):
         self.pcr_bullish_threshold = pcr_bullish_threshold
         self.pcr_bearish_threshold = pcr_bearish_threshold
+        self.confirm_snapshots = confirm_snapshots
+        self.flip_cooldown_sec = flip_cooldown_sec
+        self.entry_slippage_pct = entry_slippage_pct
+        # persistence state
+        self._cand_dir: Optional[str] = None
+        self._cand_count = 0
+        self._cand_seq: Any = None
+        self._last_dir: Optional[str] = None
+        self._last_ts = 0.0
 
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _ask(row: Dict[str, Any], side: str) -> float:
+        for k in (f"{side}_ask", f"{side}_ask_price", f"{side}_askPrice"):
+            v = row.get(k)
+            if v and v > 0:
+                return float(v)
+        return 0.0
+
+    # ------------------------------------------------------------------
     def evaluate_signal(
-        self, 
-        current: Dict[str, Any], 
+        self,
+        current: Dict[str, Any],
         chart_analysis: Optional[Dict[str, Any]] = None,
         news_analysis: Optional[Dict[str, Any]] = None,
-        market_context: Optional[Dict[str, Any]] = None
+        market_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Evaluates live Open Interest snapshot, tick-to-tick OI velocity, Multi-Timeframe Chart Patterns,
-        Breaking News Sentiment, India VIX Volatility Regime, and Top Heavyweights to produce an
-        institutional-accuracy algorithmic signal.
-        """
         spot = current["spot_price"]
         pcr = current["pcr"]
-        total_ce_chg = current["total_ce_chg_oi"]
-        total_pe_chg = current["total_pe_chg_oi"]
-        support = current["support_strike"]
-        resistance = current["resistance_strike"]
+        support = current.get("support_strike")
+        resistance = current.get("resistance_strike")
         atm_strike = current["atm_strike"]
-        oi_velocity = current.get("oi_velocity", {})
+        table = current.get("table_data", []) or []
+        vel = current.get("oi_velocity", {}) or {}
+        max_pain = current.get("max_pain", 0) or 0
+        dte = current.get("days_to_expiry")
+        is_expiry_day = bool(current.get("is_expiry_day", False))
+        day_imb = current.get("day_imbalance")
+        if day_imb is None:
+            day_imb = _imb(current.get("total_pe_chg_oi", 0), current.get("total_ce_chg_oi", 0))
 
-        bullish_score = 0
-        bearish_score = 0
-        reasons_bullish = []
-        reasons_bearish = []
+        bull: List[tuple] = []   # (points, reason)
+        bear: List[tuple] = []
+        bull_pen = 0
+        bear_pen = 0
+        fast_bull: List[str] = []
+        fast_bear: List[str] = []
 
-        is_fast_trigger = False
-        fast_reasons = []
+        def add(side: str, pts: int, text: str):
+            (bull if side == "B" else bear).append((pts, text))
 
-        # -------------------------------------------------------------
-        # 1. Baseline Open Interest (OI) Analysis
-        # -------------------------------------------------------------
-        if total_pe_chg > total_ce_chg * 1.25:
-            bullish_score += 2
-            reasons_bullish.append(f"Put writing ({total_pe_chg:,}) > Call writing ({total_ce_chg:,})")
-        if pcr >= self.pcr_bullish_threshold:
-            bullish_score += 1
-            reasons_bullish.append(f"Bullish PCR ({pcr:.2f})")
-        if spot >= support and (spot - support) < 60:
-            bullish_score += 1
-            reasons_bullish.append(f"Bouncing off Support ({support})")
+        # ---- chart inputs -------------------------------------------------
+        ca = chart_analysis or {}
+        ind = ca.get("indicators", {}) or {}
+        mtf = ca.get("mtf") or {}
+        vwap_bias = ind.get("vwap_bias", "") or ""
+        ema_trend = ind.get("ema_trend", "") or ""
+        rsi = ind.get("rsi", 50.0)
+        atr = ind.get("atr")
+        mtf_status = mtf.get("status", "") or ""
+        chart_ok = bool(ind) and bool(vwap_bias)
 
-        if total_ce_chg > total_pe_chg * 1.25:
-            bearish_score += 2
-            reasons_bearish.append(f"Call writing ({total_ce_chg:,}) > Put writing ({total_pe_chg:,})")
-        if pcr <= self.pcr_bearish_threshold:
-            bearish_score += 1
-            reasons_bearish.append(f"Bearish PCR ({pcr:.2f})")
-        if spot <= resistance and (resistance - spot) < 60:
-            bearish_score += 1
-            reasons_bearish.append(f"Testing Resistance ({resistance})")
+        # ---- 1. Baseline OI -----------------------------------------------
+        if day_imb >= 0.50:
+            add("B", 2, f"Day OI build strongly favors puts (imbalance {day_imb:+.2f})")
+        elif day_imb >= 0.25:
+            add("B", 1, f"Day OI build favors puts (imbalance {day_imb:+.2f})")
+        if day_imb <= -0.50:
+            add("A", 2, f"Day OI build strongly favors calls (imbalance {day_imb:+.2f})")
+        elif day_imb <= -0.25:
+            add("A", 1, f"Day OI build favors calls (imbalance {day_imb:+.2f})")
 
-        # -------------------------------------------------------------
-        # 2. Live OI Velocity & Rapid Shifts (Institutional Moves)
-        # -------------------------------------------------------------
-        if oi_velocity:
-            v_status = oi_velocity.get("status", "")
-            v_fast = oi_velocity.get("fast_oi_trigger", False)
-            v_dir = oi_velocity.get("direction", "")
+        if self.pcr_bullish_threshold <= pcr <= 1.7:
+            add("B", 1, f"Bullish PCR ({pcr:.2f})")
+        elif pcr <= self.pcr_bearish_threshold:
+            add("A", 1, f"Bearish PCR ({pcr:.2f})")
 
-            if v_status == "RAPID_SHORT_COVERING":
-                bullish_score += 4
-                reasons_bullish.append("⚡ Rapid Short Covering (Call writers covering shorts)")
-                if v_fast:
-                    is_fast_trigger = True
-                    fast_reasons.append("⚡ OI Shock: Rapid Short Covering in progress")
+        prox = 60.0
+        if atr:
+            prox = max(40.0, min(90.0, 2.0 * float(atr)))
+        near_support = support and 0 <= spot - support < prox
+        near_resist = resistance and 0 <= resistance - spot < prox
+        if near_support and not near_resist:
+            add("B", 1, f"Near OI support ({support})")
+        elif near_resist and not near_support:
+            add("A", 1, f"Near OI resistance ({resistance})")
 
-            elif v_status == "RAPID_LONG_UNWINDING":
-                bearish_score += 4
-                reasons_bearish.append("⚡ Rapid Long Unwinding (Put writers/buyers dumping)")
-                if v_fast:
-                    is_fast_trigger = True
-                    fast_reasons.append("⚡ OI Shock: Rapid Long Unwinding in progress")
+        if is_expiry_day and max_pain and abs(spot - max_pain) > 40:
+            if spot > max_pain:
+                add("A", 1, f"Expiry-day pull toward max pain ({max_pain})")
+            else:
+                add("B", 1, f"Expiry-day pull toward max pain ({max_pain})")
 
-            elif v_status == "AGGRESSIVE_PUT_WRITING":
-                bullish_score += 3
-                reasons_bullish.append("⚡ Aggressive Put Writing surge (Floor established)")
-                if v_fast:
-                    is_fast_trigger = True
-                    fast_reasons.append("⚡ Massive Put Writing surge")
+        # ---- 2. Windowed OI flow (from oi_analyzer v2) --------------------
+        v_status = vel.get("status", "")
+        v_dir = vel.get("direction", "NEUTRAL")
+        v_fast = bool(vel.get("fast_oi_trigger", False))
+        warming = bool(vel.get("warming_up", False))
+        broad_unwind = v_status == "BROAD_UNWINDING"
 
-            elif v_status == "AGGRESSIVE_CALL_WRITING":
-                bearish_score += 3
-                reasons_bearish.append("⚡ Aggressive Call Writing surge (Ceiling established)")
-                if v_fast:
-                    is_fast_trigger = True
-                    fast_reasons.append("⚡ Massive Call Writing surge")
+        if v_status == "RAPID_SHORT_COVERING":
+            add("B", 4, "Rapid short covering (call writers exiting)")
+            if v_fast:
+                fast_bull.append("OI shock: rapid short covering")
+        elif v_status == "RAPID_LONG_UNWINDING":
+            add("A", 4, "Rapid long unwinding / put covering")
+            if v_fast:
+                fast_bear.append("OI shock: rapid long unwinding")
+        elif v_status == "AGGRESSIVE_PUT_WRITING":
+            add("B", 3, "Aggressive put writing near ATM")
+            if v_fast:
+                fast_bull.append("OI shock: aggressive put writing")
+        elif v_status == "AGGRESSIVE_CALL_WRITING":
+            add("A", 3, "Aggressive call writing near ATM")
+            if v_fast:
+                fast_bear.append("OI shock: aggressive call writing")
+        elif v_dir == "BULLISH":
+            add("B", 1, "OI flow favors bulls")
+        elif v_dir == "BEARISH":
+            add("A", 1, "OI flow favors bears")
 
-            elif v_dir == "BULLISH":
-                bullish_score += 1
-                reasons_bullish.append("OI Accumulation favors Bulls")
-            elif v_dir == "BEARISH":
-                bearish_score += 1
-                reasons_bearish.append("OI Accumulation favors Bears")
+        if vel.get("atm_ce_unwinding") and v_dir != "BEARISH":
+            add("B", 2, "ATM call writers covering")
+            fast_bull.append("ATM call-writer capitulation")
+        if vel.get("atm_pe_unwinding") and v_dir != "BULLISH":
+            add("A", 2, "ATM put writers covering")
+            fast_bear.append("ATM put-writer capitulation")
 
-            # Option Buyer Edge: Strike-Level Panic Unwinding Detection
-            if oi_velocity.get("atm_ce_unwinding"):
-                bullish_score += 3
-                reasons_bullish.append("⚡ ATM Strike Panic Short Covering (Call writers dumping)")
-                is_fast_trigger = True
-                fast_reasons.append("⚡ ATM Call Writer Capitulation")
-
-            if oi_velocity.get("atm_pe_unwinding"):
-                bearish_score += 3
-                reasons_bearish.append("⚡ ATM Strike Panic Long Unwinding (Put writers dumping)")
-                is_fast_trigger = True
-                fast_reasons.append("⚡ ATM Put Writer Capitulation")
-
-        # -------------------------------------------------------------
-        # 3. Live News Sentiment & Breaking Catalysts
-        # -------------------------------------------------------------
+        # ---- 3. News (low weight; fast only if OI agrees) -----------------
         if news_analysis:
-            news_score = news_analysis.get("score", 0.0)
-            fast_catalyst = news_analysis.get("fast_catalyst", False)
-            cat_dir = news_analysis.get("catalyst_direction", "NONE")
-            crit_alerts = news_analysis.get("critical_alerts", [])
+            n_score = news_analysis.get("score", 0.0)
+            if n_score >= 30:
+                add("B", 1, f"Bullish news sentiment ({n_score:+.0f})")
+            elif n_score <= -30:
+                add("A", 1, f"Bearish news sentiment ({n_score:+.0f})")
+            if news_analysis.get("fast_catalyst"):
+                cat = news_analysis.get("catalyst_direction", "NONE")
+                alerts = news_analysis.get("critical_alerts", []) or []
+                label = alerts[0] if alerts else "Breaking news catalyst"
+                if cat == "BULLISH":
+                    add("B", 2, "Breaking bullish news")
+                    if v_dir == "BULLISH":
+                        fast_bull.append(f"News + OI agree: {label}")
+                elif cat == "BEARISH":
+                    add("A", 2, "Breaking bearish news")
+                    if v_dir == "BEARISH":
+                        fast_bear.append(f"News + OI agree: {label}")
 
-            if news_score >= 30:
-                bullish_score += 2
-                reasons_bullish.append(f"Bullish News Sentiment (+{news_score:.1f})")
-            elif news_score <= -30:
-                bearish_score += 2
-                reasons_bearish.append(f"Bearish News Sentiment ({news_score:.1f})")
+        # ---- 4. Multi-timeframe -------------------------------------------
+        if mtf_status == "ALIGNED_BULLISH":
+            add("B", 3, "MTF aligned bullish (15m + 5m)")
+        elif mtf_status == "ALIGNED_BEARISH":
+            add("A", 3, "MTF aligned bearish (15m + 5m)")
+        elif mtf_status == "BEARISH_BOUNCE":
+            bull_pen += 2
+        elif mtf_status == "BULLISH_PULLBACK":
+            bear_pen += 2
 
-            # High-impact news catalyst
-            if fast_catalyst:
-                if cat_dir == "BULLISH":
-                    bullish_score += 3
-                    is_fast_trigger = True
-                    top_alert = crit_alerts[0] if crit_alerts else "Breaking Bullish News Catalyst"
-                    fast_reasons.append(f"📰 {top_alert}")
-                    reasons_bullish.append("Breaking Bullish News Flow")
-                elif cat_dir == "BEARISH":
-                    bearish_score += 3
-                    is_fast_trigger = True
-                    top_alert = crit_alerts[0] if crit_alerts else "Breaking Bearish News Catalyst"
-                    fast_reasons.append(f"📰 {top_alert}")
-                    reasons_bearish.append("Breaking Bearish News Flow")
+        # ---- 5. VIX -------------------------------------------------------
+        vix_d = (market_context or {}).get("vix") or {}
+        if vix_d:
+            chg = vix_d.get("change_pct", 0.0)
+            if chg <= -2.5:
+                bull_pen += 1
+                bear_pen += 1   # IV crush hurts option buyers on both sides
+            elif chg <= -1.0:
+                add("B", 1, f"VIX cooling ({chg:+.1f}%)")
+            elif chg >= 2.5:
+                add("A", 2, f"VIX spiking ({chg:+.1f}%)")
 
-        # -------------------------------------------------------------
-        # 4. Multi-Timeframe Alignment (15m Macro Trend + 5m Action)
-        # -------------------------------------------------------------
-        if chart_analysis and chart_analysis.get("mtf"):
-            mtf = chart_analysis["mtf"]
-            mtf_status = mtf.get("status")
-            if mtf_status == "ALIGNED_BULLISH":
-                bullish_score += 3
-                reasons_bullish.append("MTF Alignment: 15m Macro + 5m Trigger both Bullish")
-            elif mtf_status == "ALIGNED_BEARISH":
-                bearish_score += 3
-                reasons_bearish.append("MTF Alignment: 15m Macro + 5m Trigger both Bearish")
-            elif mtf_status == "BEARISH_BOUNCE":
-                # 15m is Bearish, 5m is bouncing. Penalize false bull breakout trap
-                bullish_score = max(0, bullish_score - 2)
-                reasons_bearish.append("MTF Trap Warning: 15m Macro Trend is Bearish")
-            elif mtf_status == "BULLISH_PULLBACK":
-                # 15m is Bullish, 5m is dipping. Penalize false bear breakdown trap
-                bearish_score = max(0, bearish_score - 2)
-                reasons_bullish.append("MTF Trap Warning: 15m Macro Trend is Bullish")
+        # ---- 6. Heavyweights ----------------------------------------------
+        hw = (market_context or {}).get("heavyweights") or {}
+        hw_bias = hw.get("bias", "") or ""
+        if hw_bias == "BULLISH_SUPPORT":
+            add("B", 2, "Heavyweights supportive")
+            bear_pen += 2
+        elif hw_bias == "BEARISH_DRAG":
+            add("A", 2, "Heavyweights dragging")
+            bull_pen += 2
 
-        # -------------------------------------------------------------
-        # 5. India VIX & Volatility Filter
-        # -------------------------------------------------------------
-        if market_context and market_context.get("vix"):
-            vix_data = market_context["vix"]
-            vix_val = vix_data.get("vix", 14.5)
-            vix_chg_pct = vix_data.get("change_pct", 0.0)
+        # ---- 7. Price action (explicit conditions only) -------------------
+        cb = [p.get("name", "?") for p in ca.get("candlestick_patterns", []) if p.get("type") == "BULLISH"]
+        ca_b = [p.get("name", "?") for p in ca.get("candlestick_patterns", []) if p.get("type") == "BEARISH"]
+        fb = [f.get("name", "?") for f in ca.get("chart_formations", []) if f.get("type") == "BULLISH"]
+        fa = [f.get("name", "?") for f in ca.get("chart_formations", []) if f.get("type") == "BEARISH"]
+        if cb:
+            add("B", min(self.CAP_CANDLE, self.W_CANDLE * len(cb)), "Chart: " + ", ".join(cb[:2]))
+        if ca_b:
+            add("A", min(self.CAP_CANDLE, self.W_CANDLE * len(ca_b)), "Chart: " + ", ".join(ca_b[:2]))
+        if fb:
+            add("B", min(self.CAP_FORMATION, self.W_FORMATION * len(fb)), "Formation: " + ", ".join(fb[:2]))
+        if fa:
+            add("A", min(self.CAP_FORMATION, self.W_FORMATION * len(fa)), "Formation: " + ", ".join(fa[:2]))
 
-            if vix_chg_pct <= -2.5:
-                # Option Buyer IV Crush Alert: Rapid drop in IV deflates premiums
-                bullish_score = max(0, bullish_score - 1)
-                bearish_score = max(0, bearish_score - 1)
-                reasons_bullish.append(f"⚠️ IV Crush Alert: VIX contracting ({vix_chg_pct:+.1f}%) eats option premiums")
-                reasons_bearish.append(f"⚠️ IV Crush Alert: VIX contracting ({vix_chg_pct:+.1f}%) eats option premiums")
-            elif vix_chg_pct <= -1.0:
-                bullish_score += 1
-                reasons_bullish.append(f"India VIX Cooling ({vix_chg_pct:+.1f}%) — Steady Bullish Tailwind")
-            elif vix_chg_pct >= 2.5:
-                bearish_score += 2
-                reasons_bearish.append(f"India VIX Spiking ({vix_chg_pct:+.1f}%) — Institutional Hedging / Put Demand")
-            elif vix_chg_pct >= 1.0:
-                # Volatility Expansion: Option Buyers benefit from rising IV
-                reasons_bullish.append(f"India VIX Expanding ({vix_chg_pct:+.1f}%) — Premium Expansion Tailwind")
-                reasons_bearish.append(f"India VIX Expanding ({vix_chg_pct:+.1f}%) — Premium Expansion Tailwind")
+        if ema_trend == "BULLISH":
+            add("B", 1, "EMA(9) > EMA(21)")
+        elif ema_trend == "BEARISH":
+            add("A", 1, "EMA(9) < EMA(21)")
+        if "ABOVE_VWAP" in vwap_bias:
+            add("B", 1, "Above VWAP")
+        elif "BELOW_VWAP" in vwap_bias:
+            add("A", 1, "Below VWAP")
+        if rsi > 55:
+            add("B", 1, f"RSI momentum ({rsi:.1f})")
+        elif rsi < 45:
+            add("A", 1, f"RSI momentum ({rsi:.1f})")
+        if rsi >= 78:
+            bull_pen += 1   # exhaustion
+        elif rsi <= 22:
+            bear_pen += 1
 
-        # -------------------------------------------------------------
-        # 6. NIFTY Heavyweights Check (Reliance, HDFC Bank, ICICI Bank)
-        # -------------------------------------------------------------
-        if market_context and market_context.get("heavyweights"):
-            hw_data = market_context["heavyweights"]
-            hw_bias = hw_data.get("bias", "")
-            green_cnt = hw_data.get("green_count", 0)
-            red_cnt = hw_data.get("red_count", 0)
+        bull_score = max(0, sum(p for p, _ in bull) - bull_pen)
+        bear_score = max(0, sum(p for p, _ in bear) - bear_pen)
+        bull.sort(key=lambda x: -x[0])
+        bear.sort(key=lambda x: -x[0])
+        reasons_bull = [t for _, t in bull]
+        reasons_bear = [t for _, t in bear]
 
-            if hw_bias == "BULLISH_SUPPORT":
-                bullish_score += 2
-                bearish_score = max(0, bearish_score - 2)
-                reasons_bullish.append(f"Heavyweights Bullish ({green_cnt}/3 Green: Reliance/ICICI Support)")
-            elif hw_bias == "BEARISH_DRAG":
-                bearish_score += 2
-                bullish_score = max(0, bullish_score - 2)
-                reasons_bearish.append(f"Heavyweights Bearish ({red_cnt}/3 Red: Reliance/HDFC Dragging)")
+        # ---- 8. Session / thresholds --------------------------------------
+        sess = (market_context or {}).get("session") or {}
+        is_chop_zone = bool(sess.get("is_chop_zone", False))
+        sess_min = sess.get("min_confluence")
 
-        # -------------------------------------------------------------
-        # 7. Chart Pattern & Price Action Analysis
-        # -------------------------------------------------------------
-        if chart_analysis:
-            patterns = chart_analysis.get("candlestick_patterns", [])
-            formations = chart_analysis.get("chart_formations", [])
-            indicators = chart_analysis.get("indicators", {})
+        # ---- 9. Pillars (derivatives pillar is mandatory) -----------------
+        if v_dir == "BULLISH":
+            bull_p1, bear_p1 = True, False
+        elif v_dir == "BEARISH":
+            bull_p1, bear_p1 = False, True
+        else:  # neutral flow or warming up -> fall back to day-level imbalance
+            bull_p1, bear_p1 = day_imb >= 0.35, day_imb <= -0.35
+        bull_p2 = mtf_status == "ALIGNED_BULLISH" or (
+            ema_trend == "BULLISH" and mtf_status not in ("ALIGNED_BEARISH", "BEARISH_BOUNCE"))
+        bear_p2 = mtf_status == "ALIGNED_BEARISH" or (
+            ema_trend == "BEARISH" and mtf_status not in ("ALIGNED_BULLISH", "BULLISH_PULLBACK"))
+        bull_p3 = "ABOVE_VWAP" in vwap_bias and hw_bias != "BEARISH_DRAG"
+        bear_p3 = "BELOW_VWAP" in vwap_bias and hw_bias != "BULLISH_SUPPORT"
+        bull_p4 = bool(cb or fb) or (rsi > 55 and ema_trend == "BULLISH")
+        bear_p4 = bool(ca_b or fa) or (rsi < 45 and ema_trend == "BEARISH")
+        bull_pillars = sum([bull_p1, bull_p2, bull_p3, bull_p4])
+        bear_pillars = sum([bear_p1, bear_p2, bear_p3, bear_p4])
 
-            for p in patterns:
-                p_name = p["name"]
-                if p["type"] == "BULLISH":
-                    bullish_score += 2
-                    reasons_bullish.append(f"Chart: {p_name}")
-                elif p["type"] == "BEARISH":
-                    bearish_score += 2
-                    reasons_bearish.append(f"Chart: {p_name}")
+        # ---- 10. Evaluate each side ---------------------------------------
+        sides: Dict[str, Dict[str, Any]] = {}
+        for side in ("CE", "PE"):
+            is_bull = side == "CE"
+            score = bull_score if is_bull else bear_score
+            opp = bear_score if is_bull else bull_score
+            pillars = bull_pillars if is_bull else bear_pillars
+            p1 = bull_p1 if is_bull else bear_p1
+            fast_list = fast_bull if is_bull else fast_bear
 
-            for f in formations:
-                f_name = f["name"]
-                if f["type"] == "BULLISH":
-                    bullish_score += 3
-                    reasons_bullish.append(f"Formation: {f_name}")
-                elif f["type"] == "BEARISH":
-                    bearish_score += 3
-                    reasons_bearish.append(f"Formation: {f_name}")
-
-            if indicators:
-                ema_trend = indicators.get("ema_trend")
-                vwap_bias = indicators.get("vwap_bias", "")
-                rsi = indicators.get("rsi", 50.0)
-
-                if ema_trend == "BULLISH":
-                    bullish_score += 1
-                    reasons_bullish.append("EMA(9) > EMA(21)")
-                else:
-                    bearish_score += 1
-                    reasons_bearish.append("EMA(9) < EMA(21)")
-
-                if "ABOVE_VWAP" in vwap_bias:
-                    bullish_score += 1
-                    reasons_bullish.append("Trading Above VWAP")
-                else:
-                    bearish_score += 1
-                    reasons_bearish.append("Trading Below VWAP")
-
-                if rsi > 55:
-                    bullish_score += 1
-                    reasons_bullish.append(f"RSI Momentum ({rsi:.1f})")
-                elif rsi < 45:
-                    bearish_score += 1
-                    reasons_bearish.append(f"RSI Bearish Momentum ({rsi:.1f})")
-
-        # -------------------------------------------------------------
-        # 8. Time-of-Day Filter & Confluence Determination (Institutional Sniper Engine)
-        # -------------------------------------------------------------
-        is_chop_zone = False
-        min_confluence_req = 75  # Upgraded: Require institutional 75%+ confluence
-        if market_context and market_context.get("session"):
-            sess = market_context["session"]
-            is_chop_zone = sess.get("is_chop_zone", False)
-            min_confluence_req = max(75, sess.get("min_confluence", 75))
-
-        # Enforce strict institutional thresholds to filter whipsaw and false breakouts:
-        # In Chop Zone (11:30 - 13:15), require min_score 8 and 85%+ confluence to protect option buyers from theta burn!
-        if is_chop_zone and not is_fast_trigger:
-            min_score = 8
-            min_confluence_req = 85
-        elif is_fast_trigger:
-            min_score = 5
-        else:
-            min_score = 7
-
-        atm_data = next((s for s in current["table_data"] if s["strike"] == atm_strike), None)
-        signal = "HOLD"
-        instrument = None
-        option_ltp = 0.0
-        confluence_pct = 50
-        urgency = "PATIENT_OBSERVING"
-
-        # Check Structural Filters (Institutional Vetoes)
-        vwap_bias = ""
-        ema_trend = ""
-        mtf_status = ""
-        hw_bias = ""
-        if chart_analysis:
-            indicators = chart_analysis.get("indicators", {})
-            vwap_bias = indicators.get("vwap_bias", "")
-            ema_trend = indicators.get("ema_trend", "")
-            if chart_analysis.get("mtf"):
-                mtf_status = chart_analysis["mtf"].get("status", "")
-        if market_context and market_context.get("heavyweights"):
-            hw_bias = market_context["heavyweights"].get("bias", "")
-
-        # Pillars of Confluence (Must have at least 3 matching pillars to trade)
-        # Pillar 1: Derivatives / OI Disparity
-        bull_p1 = (total_pe_chg > total_ce_chg * 1.30) or (pcr >= 1.15) or ("Short Covering" in " ".join(reasons_bullish))
-        bear_p1 = (total_ce_chg > total_pe_chg * 1.30) or (pcr <= 0.85) or ("Long Unwinding" in " ".join(reasons_bearish))
-
-        # Pillar 2: Macro Multi-Timeframe Alignment
-        bull_p2 = (mtf_status == "ALIGNED_BULLISH") or (mtf_status != "ALIGNED_BEARISH" and ema_trend == "BULLISH")
-        bear_p2 = (mtf_status == "ALIGNED_BEARISH") or (mtf_status != "ALIGNED_BULLISH" and ema_trend == "BEARISH")
-
-        # Pillar 3: Institutional VWAP Benchmark & Momentum
-        bull_p3 = ("ABOVE_VWAP" in vwap_bias) and (hw_bias != "BEARISH_DRAG")
-        bear_p3 = ("BELOW_VWAP" in vwap_bias or not vwap_bias) and (hw_bias != "BULLISH_SUPPORT")
-
-        # Pillar 4: Price Action / Candlestick Formations
-        bull_p4 = any(r.startswith("Chart:") or r.startswith("Formation:") for r in reasons_bullish)
-        bear_p4 = any(r.startswith("Chart:") or r.startswith("Formation:") for r in reasons_bearish)
-
-        bull_pillars = sum([1 for p in [bull_p1, bull_p2, bull_p3, bull_p4] if p])
-        bear_pillars = sum([1 for p in [bear_p1, bear_p2, bear_p3, bear_p4] if p])
-
-        # Evaluate Strict Bullish Conviction:
-        # Requires: min_score, score dominance of >= +3 points, no VWAP trap, and at least 3 pillars
-        if (
-            bullish_score >= min_score 
-            and bullish_score >= bearish_score + 3 
-            and bull_pillars >= 3
-            and "ABOVE_VWAP" in vwap_bias
-            and hw_bias != "BEARISH_DRAG"
-            and mtf_status != "ALIGNED_BEARISH"
-        ):
-            if is_fast_trigger and ("Short Covering" in " ".join(fast_reasons) or "Bullish" in " ".join(fast_reasons)):
-                signal = "FAST_BUY_CE"
-                urgency = "⚡ HIGH_CONFLUENCE_FAST"
+            vetoes: List[str] = []
+            if not chart_ok:
+                vetoes.append("chart data unavailable")
+            if is_bull:
+                if chart_ok and "ABOVE_VWAP" not in vwap_bias:
+                    vetoes.append("below VWAP")
+                if hw_bias == "BEARISH_DRAG":
+                    vetoes.append("heavyweights dragging")
+                if mtf_status == "ALIGNED_BEARISH":
+                    vetoes.append("15m trend bearish")
             else:
-                signal = "BUY_CE"
-                urgency = "🎯 HIGH_CONFLUENCE_SNIPER"
+                if chart_ok and "BELOW_VWAP" not in vwap_bias:
+                    vetoes.append("above VWAP")
+                if hw_bias == "BULLISH_SUPPORT":
+                    vetoes.append("heavyweights supportive")
+                if mtf_status == "ALIGNED_BULLISH":
+                    vetoes.append("15m trend bullish")
 
-            instrument = f"NIFTY {atm_strike} CE"
-            option_ltp = atm_data["ce_ltp"] if atm_data else 0.0
-            lead_reasons = fast_reasons if is_fast_trigger and fast_reasons else reasons_bullish[:3]
-            reason = " | ".join(lead_reasons + [r for r in reasons_bullish if r not in lead_reasons][:2])
-            raw_conf = int((bullish_score / max(1, bullish_score + bearish_score)) * 100)
-            confluence_pct = min(98, max(min_confluence_req, 70 + (bull_pillars * 7)))
-
-        # Evaluate Strict Bearish Conviction:
-        # Requires: min_score, score dominance of >= +3 points, no VWAP trap, and at least 3 pillars
-        elif (
-            bearish_score >= min_score 
-            and bearish_score >= bullish_score + 3 
-            and bear_pillars >= 3
-            and "ABOVE_VWAP" not in vwap_bias
-            and hw_bias != "BULLISH_SUPPORT"
-            and mtf_status != "ALIGNED_BULLISH"
-        ):
-            if is_fast_trigger and ("Long Unwinding" in " ".join(fast_reasons) or "Bearish" in " ".join(fast_reasons)):
-                signal = "FAST_BUY_PE"
-                urgency = "⚡ HIGH_CONFLUENCE_FAST"
-            else:
-                signal = "BUY_PE"
-                urgency = "🎯 HIGH_CONFLUENCE_SNIPER"
-
-            instrument = f"NIFTY {atm_strike} PE"
-            option_ltp = atm_data["pe_ltp"] if atm_data else 0.0
-            lead_reasons = fast_reasons if is_fast_trigger and fast_reasons else reasons_bearish[:3]
-            reason = " | ".join(lead_reasons + [r for r in reasons_bearish if r not in lead_reasons][:2])
-            raw_conf = int((bearish_score / max(1, bullish_score + bearish_score)) * 100)
-            confluence_pct = min(98, max(min_confluence_req, 70 + (bear_pillars * 7)))
-
-        else:
-            signal = "HOLD"
-            confluence_pct = 50
+            fast = bool(fast_list)
             if is_chop_zone:
-                reason = "Midday Theta Chop Zone (11:30-13:15) — Preserving capital against false breakout noise."
-            elif "ABOVE_VWAP" not in vwap_bias and bullish_score > bearish_score:
-                reason = "Holding: NIFTY trading below VWAP. Rejecting counter-trend CE entries to protect capital."
-            elif "ABOVE_VWAP" in vwap_bias and bearish_score > bullish_score:
-                reason = "Holding: NIFTY trading above VWAP. Rejecting counter-trend PE entries to protect capital."
-            elif bull_pillars < 3 and bear_pillars < 3:
-                reason = f"Patiently Observing: Awaiting 3-Pillar Confluence (Pillars Bull:{bull_pillars}/4, Bear:{bear_pillars}/4)."
+                min_score = self.CHOP_FAST_MIN_SCORE if fast else self.CHOP_MIN_SCORE
+                min_conf = self.CHOP_MIN_CONF
             else:
-                reason = "Market consolidating in range. Filtering noise to take only high-probability sniper trades."
+                min_score = self.FAST_MIN_SCORE if fast else self.BASE_MIN_SCORE
+                min_conf = self.BASE_MIN_CONF
+            if sess_min:
+                min_conf = max(min_conf, min(int(sess_min), 90))
+            if is_expiry_day:
+                min_score += 1
+            if broad_unwind or warming:
+                min_score += 1
+
+            share = score / max(1, score + opp)
+            conf = int(min(99, round(0.5 * (pillars / 4 * 100) + 0.5 * (share * 100))))
+
+            blockers = list(vetoes)
+            if score < min_score:
+                blockers.append(f"score {score}<{min_score}")
+            if score < opp + self.DOMINANCE:
+                blockers.append("no clear score dominance")
+            if not p1:
+                blockers.append("OI flow not confirming")
+            if pillars < 3:
+                blockers.append(f"pillars {pillars}/4")
+            if conf < min_conf:
+                blockers.append(f"confluence {conf}%<{min_conf}%")
+            if is_chop_zone and not fast and blockers:
+                blockers.append("midday chop zone: stricter filter")
+
+            sides[side] = {
+                "ok": not blockers, "score": score, "pillars": pillars, "conf": conf,
+                "fast": fast, "fast_reasons": fast_list, "blockers": blockers,
+                "min_score": min_score, "min_conf": min_conf,
+            }
+
+        chosen: Optional[str] = None
+        ok_sides = [s for s in ("CE", "PE") if sides[s]["ok"]]
+        if ok_sides:
+            chosen = max(ok_sides, key=lambda s: sides[s]["score"])
+
+        lean = "CE" if bull_score >= bear_score else "PE"
+        info = sides[chosen] if chosen else sides[lean]
+
+        # ---- 11. Persistence, flip cooldown -------------------------------
+        now = time.time()
+        hold_note = ""
+        if chosen:
+            seq = current.get("snapshot_seq")
+            if chosen == self._cand_dir:
+                if seq is None or seq != self._cand_seq:
+                    self._cand_count += 1
+                    self._cand_seq = seq
+            else:
+                self._cand_dir, self._cand_count, self._cand_seq = chosen, 1, seq
+            needed = 1 if info["fast"] else self.confirm_snapshots
+            if self._last_dir and chosen != self._last_dir and now - self._last_ts < self.flip_cooldown_sec:
+                hold_note = f"flip cooldown ({int(self.flip_cooldown_sec - (now - self._last_ts))}s left)"
+                chosen = None
+            elif self._cand_count < needed:
+                hold_note = f"awaiting confirmation ({self._cand_count}/{needed} data snapshots)"
+                chosen = None
+        else:
+            self._cand_dir, self._cand_count, self._cand_seq = None, 0, None
+
+        # ---- 12. Build output ---------------------------------------------
+        atm_row = next((s for s in table if s["strike"] == atm_strike), None)
+        signal, instrument, entry_px, urgency = "HOLD", None, 0.0, "PATIENT_OBSERVING"
+        confluence_pct = 50
+        reason = ""
+        is_fast_out = bool(info["fast"])
+
+        if chosen:
+            is_ce = chosen == "CE"
+            signal = ("FAST_BUY_CE" if is_ce else "FAST_BUY_PE") if info["fast"] else ("BUY_CE" if is_ce else "BUY_PE")
+            urgency = "⚡ HIGH_CONFLUENCE_FAST" if info["fast"] else "🎯 HIGH_CONFLUENCE_SNIPER"
+            instrument = f"NIFTY {atm_strike} {chosen}"
+            if atm_row:
+                side_key = "ce" if is_ce else "pe"
+                base = self._ask(atm_row, side_key) or atm_row.get(f"{side_key}_ltp", 0.0)
+                entry_px = round(base * (1 + self.entry_slippage_pct / 100.0), 2) if base else 0.0
+            reasons = reasons_bull if is_ce else reasons_bear
+            lead = info["fast_reasons"] if info["fast"] else reasons[:3]
+            reason = " | ".join(lead + [r for r in reasons if r not in lead][:2])
+            confluence_pct = info["conf"]
+            self._last_dir, self._last_ts = chosen, now
+        else:
+            if hold_note:
+                reason = f"Holding: {hold_note}"
+            elif max(bull_score, bear_score) == 0:
+                reason = "Holding: no directional edge."
+            else:
+                lean_txt = "bullish" if lean == "CE" else "bearish"
+                reason = f"Holding ({lean_txt} lean {max(bull_score, bear_score)}): " + "; ".join(info["blockers"][:3])
+            if "midday chop" in reason:
+                reason = "Midday theta chop zone: " + reason
+
+        # buyer profile: ATR-aware stop, wider on expiry day
+        sl_pct, tgt_mult = 16.0, 2.5
+        if atr and entry_px > 0:
+            sl_pct = max(12.0, min(30.0, (1.2 * float(atr) * 0.5) / entry_px * 100.0))
+        if is_expiry_day:
+            sl_pct = max(sl_pct, 20.0)
+        buyer_profile = {
+            "sweet_spot_delta": "0.50 (Peak Gamma ATM)",
+            "time_stop_limit_sec": 600,
+            "breakeven_trigger_pct": round(1.1 * sl_pct, 1),
+            "initial_sl_pct": round(sl_pct, 1),
+            "initial_tgt_pct": round(tgt_mult * sl_pct, 1),
+            "theta_defense_active": bool(is_chop_zone or is_expiry_day),
+        }
+
+        features = {
+            "ts": round(now, 2), "snapshot_seq": current.get("snapshot_seq"),
+            "spot": spot, "atm_strike": atm_strike, "pcr": pcr, "dte": dte,
+            "day_imbalance": round(day_imb, 3),
+            "flow_imbalance": vel.get("flow_imbalance"), "flow_pct": vel.get("flow_pct"),
+            "v_status": v_status, "delta_ce_pct": vel.get("delta_ce_pct"), "delta_pe_pct": vel.get("delta_pe_pct"),
+            "delta_spot": vel.get("delta_spot"), "delta_pcr": vel.get("delta_pcr"),
+            "vix_chg": vix_d.get("change_pct") if vix_d else None,
+            "hw_bias": hw_bias, "mtf": mtf_status, "ema_trend": ema_trend, "vwap_bias": vwap_bias,
+            "rsi": rsi, "atr": atr, "news_score": (news_analysis or {}).get("score"),
+            "bull_score": bull_score, "bear_score": bear_score,
+            "bull_pillars": bull_pillars, "bear_pillars": bear_pillars,
+            "chop": int(is_chop_zone), "expiry_day": int(is_expiry_day),
+            "atm_ce_ltp": (atm_row or {}).get("ce_ltp"), "atm_pe_ltp": (atm_row or {}).get("pe_ltp"),
+            "signal": signal, "confluence_pct": confluence_pct,
+        }
 
         return {
             "signal": signal,
             "instrument": instrument,
             "strike": atm_strike,
-            "estimated_entry_price": option_ltp,
+            "estimated_entry_price": entry_px,
             "reason": reason,
-            "bullish_score": bullish_score,
-            "bearish_score": bearish_score,
+            "bullish_score": bull_score,
+            "bearish_score": bear_score,
             "confluence_pct": confluence_pct,
             "spot_price": spot,
             "support": support,
             "resistance": resistance,
             "pcr": pcr,
-            "is_fast_trigger": is_fast_trigger,
+            "is_fast_trigger": is_fast_out,
             "is_chop_zone": is_chop_zone,
             "urgency": urgency,
-            "buyer_profile": {
-                "sweet_spot_delta": "0.50 (Peak Gamma ATM)",
-                "time_stop_limit_sec": 600,
-                "breakeven_trigger_pct": 18.0,
-                "initial_sl_pct": 16.0,
-                "initial_tgt_pct": 40.0,
-                "theta_defense_active": is_chop_zone
-            }
+            "buyer_profile": buyer_profile,
+            "pillars_bull": bull_pillars,
+            "pillars_bear": bear_pillars,
+            "min_score_required": info["min_score"],
+            "min_confluence_required": info["min_conf"],
+            "blockers": info["blockers"],
+            "features": features,
         }

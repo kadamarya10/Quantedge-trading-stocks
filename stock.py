@@ -18,12 +18,13 @@ Integrates:
 
 import sys
 import os
+import re
 import time
 import math
 import argparse
 import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
 # Ensure UTF-8 output encoding on Windows consoles
@@ -43,6 +44,37 @@ _NIFTY_BENCHMARK_CACHE = {
     "data": None,
     "last_fetched": 0.0
 }
+
+# Cache for Yahoo daily candle history to avoid rate-limiting during scans (TTL: 1 hour)
+_YAHOO_HISTORY_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def is_market_hours_ist() -> bool:
+    """Checks if Indian market is currently open (Monday-Friday 9:15 AM - 3:30 PM IST)."""
+    try:
+        now_utc = datetime.now(timezone.utc)
+        ist = now_utc + timedelta(hours=5, minutes=30)
+        if ist.weekday() >= 5:  # Saturday or Sunday
+            return False
+        mins = ist.hour * 60 + ist.minute
+        return 555 <= mins <= 930  # 9:15 AM to 3:30 PM
+    except Exception:
+        return False
+
+
+def get_days_to_expiry() -> int:
+    """Calculates days remaining until the upcoming Thursday weekly/monthly derivatives expiry."""
+    try:
+        today = datetime.now()
+        days_ahead = (3 - today.weekday()) % 7  # 3 = Thursday
+        return days_ahead
+    except Exception:
+        return 7
+
+
+def _kw_hit(kw: str, text: str) -> bool:
+    """Accurate keyword matching with word boundaries to avoid false substring matches."""
+    return re.search(r"\b" + re.escape(kw) + r"\b", text, re.IGNORECASE) is not None
 
 BULLISH_STOCK_KEYWORDS = {
     "profit jumps": 3.0, "profit rises": 2.5, "net surges": 3.0, "q1": 1.0, "q2": 1.0, "q3": 1.0, "q4": 1.0,
@@ -119,7 +151,7 @@ def calc_rsi(series: List[float], period: int = 14) -> float:
 
 def calc_supertrend(candles: List[Dict[str, float]], period: int = 10, multiplier: float = 3.0) -> Dict[str, Any]:
     """
-    Calculates Canonical Supertrend (10, 3) indicator.
+    Calculates Canonical Supertrend (10, 3) indicator using Wilder's smoothed ATR (RMA).
     Returns Supertrend level, trend direction ('BULLISH' / 'BEARISH'), and badge.
     """
     if len(candles) < period + 1:
@@ -133,12 +165,17 @@ def calc_supertrend(candles: List[Dict[str, float]], period: int = 10, multiplie
         cp = candles[i - 1]["close"]
         tr_list.append(max(h - l, abs(h - cp), abs(l - cp)))
 
+    # Canonical Wilder's Smoothed ATR (RMA)
     atr_list = []
-    for i in range(len(tr_list)):
-        if i + 1 < period:
-            atr_list.append(sum(tr_list[:i + 1]) / (i + 1))
-        else:
-            atr_list.append(sum(tr_list[i - period + 1:i + 1]) / period)
+    if tr_list:
+        first_atr = sum(tr_list[:period]) / min(period, len(tr_list))
+        atr_list.append(first_atr)
+        for i in range(1, len(tr_list)):
+            prev_atr = atr_list[-1]
+            cur_tr = tr_list[i]
+            # Wilder's smoothing formula: (prev_atr * (period - 1) + cur_tr) / period
+            new_atr = (prev_atr * (period - 1) + cur_tr) / period
+            atr_list.append(new_atr)
 
     fub = [0.0] * len(candles)
     flb = [0.0] * len(candles)
@@ -150,7 +187,7 @@ def calc_supertrend(candles: List[Dict[str, float]], period: int = 10, multiplie
         l = candles[i]["low"]
         c = candles[i]["close"]
         hl2 = (h + l) / 2.0
-        atr = atr_list[i - 1]
+        atr = atr_list[i - 1] if (i - 1) < len(atr_list) else atr_list[-1]
         bub = hl2 + (multiplier * atr)
         blb = hl2 - (multiplier * atr)
 
@@ -190,7 +227,7 @@ def calc_supertrend(candles: List[Dict[str, float]], period: int = 10, multiplie
 def calc_fibonacci_levels(candles: List[Dict[str, float]], lookback: int = 60) -> Dict[str, Any]:
     """
     Calculates Fibonacci Retracements (0.236, 0.382, 0.500, 0.618 Golden Pocket, 0.786)
-    and Extensions (1.272, 1.618) based on recent swing structure.
+    and Extensions (1.272, 1.618) respecting historical swing order.
     """
     if len(candles) < 20:
         return {}
@@ -202,41 +239,64 @@ def calc_fibonacci_levels(candles: List[Dict[str, float]], lookback: int = 60) -
     sw_l = min(lows)
     rng = max(0.1, sw_h - sw_l)
 
-    # Retracements
-    fib_236 = round(sw_h - (0.236 * rng), 2)
-    fib_382 = round(sw_h - (0.382 * rng), 2)
-    fib_500 = round(sw_h - (0.500 * rng), 2)
-    fib_618 = round(sw_h - (0.618 * rng), 2) # Golden Pocket
-    fib_786 = round(sw_h - (0.786 * rng), 2)
+    idx_h = highs.index(sw_h)
+    idx_l = lows.index(sw_l)
+    is_uptrend_swing = idx_l < idx_h  # Low preceded high: uptrend swing
 
-    # Extensions
-    fib_127 = round(sw_l + (1.272 * rng), 2)
-    fib_161 = round(sw_l + (1.618 * rng), 2)
+    if is_uptrend_swing:
+        # Standard pullback retracements from high
+        fib_236 = round(sw_h - (0.236 * rng), 2)
+        fib_382 = round(sw_h - (0.382 * rng), 2)
+        fib_500 = round(sw_h - (0.500 * rng), 2)
+        fib_618 = round(sw_h - (0.618 * rng), 2)  # Golden Pocket Support
+        fib_786 = round(sw_h - (0.786 * rng), 2)
+        fib_127 = round(sw_l + (1.272 * rng), 2)
+        fib_161 = round(sw_l + (1.618 * rng), 2)
+    else:
+        # Downtrend / Relief rally bounce retracements from low
+        fib_236 = round(sw_l + (0.236 * rng), 2)
+        fib_382 = round(sw_l + (0.382 * rng), 2)
+        fib_500 = round(sw_l + (0.500 * rng), 2)
+        fib_618 = round(sw_l + (0.618 * rng), 2)  # Golden Pocket Resistance
+        fib_786 = round(sw_l + (0.786 * rng), 2)
+        fib_127 = round(sw_h - (1.272 * rng), 2)
+        fib_161 = round(sw_h - (1.618 * rng), 2)
 
     curr_c = candles[-1]["close"]
-    # Check if testing Golden Pocket (0.500 to 0.618)
     dist_to_gp = abs(curr_c - fib_618) / curr_c if curr_c > 0 else 1.0
 
-    if dist_to_gp <= 0.015:
-        if curr_c >= fib_618:
-            gp_status = "HOLDING_GOLDEN_POCKET"
-            gp_badge = f"🎯 GOLDEN POCKET SUPPORT (Holding 0.618 Retracement @ ₹{fib_618:,.2f})"
+    if is_uptrend_swing:
+        if dist_to_gp <= 0.015:
+            if curr_c >= fib_618:
+                gp_status = "HOLDING_GOLDEN_POCKET"
+                gp_badge = f"🎯 GOLDEN POCKET SUPPORT (Holding 0.618 Retracement @ ₹{fib_618:,.2f})"
+            else:
+                gp_status = "TESTING_GOLDEN_POCKET"
+                gp_badge = f"⚠️ TESTING GOLDEN POCKET (Support Zone: ₹{fib_618:,.2f} - ₹{fib_500:,.2f})"
+        elif curr_c < fib_786:
+            gp_status = "FIB_BREAKDOWN"
+            gp_badge = f"🔴 FIB BREAKDOWN (Pierced 0.786 Level @ ₹{fib_786:,.2f})"
+        elif curr_c > sw_h:
+            gp_status = "FIB_EXPANSION"
+            gp_badge = f"🚀 FIB BREAKOUT (Trading Above Swing High — Target 1.272: ₹{fib_127:,.2f})"
         else:
-            gp_status = "TESTING_GOLDEN_POCKET"
-            gp_badge = f"⚠️ TESTING GOLDEN POCKET (Support Zone: ₹{fib_618:,.2f} - ₹{fib_500:,.2f})"
-    elif curr_c < fib_786:
-        gp_status = "FIB_BREAKDOWN"
-        gp_badge = f"🔴 FIB BREAKDOWN (Pierced 0.786 Level @ ₹{fib_786:,.2f})"
-    elif curr_c > sw_h:
-        gp_status = "FIB_EXPANSION"
-        gp_badge = f"🚀 FIB BREAKOUT (Trading Above Swing High — Target 1.272: ₹{fib_127:,.2f})"
+            gp_status = "NORMAL_RANGE"
+            gp_badge = f"⚪ FIB ZONE (Between 0.382: ₹{fib_382:,.2f} & 0.618: ₹{fib_618:,.2f})"
     else:
-        gp_status = "NORMAL_RANGE"
-        gp_badge = f"⚪ FIB ZONE (Between 0.382: ₹{fib_382:,.2f} & 0.618: ₹{fib_618:,.2f})"
+        if dist_to_gp <= 0.015:
+            gp_status = "TESTING_GOLDEN_POCKET_RESISTANCE"
+            gp_badge = f"⚠️ GOLDEN POCKET RESISTANCE (Relief Rally Testing 0.618 @ ₹{fib_618:,.2f})"
+        elif curr_c < sw_l:
+            gp_status = "FIB_BREAKDOWN"
+            gp_badge = f"🔴 FIB DOWNSIDE EXPANSION (Below Swing Low — Target 1.272: ₹{fib_127:,.2f})"
+        else:
+            gp_status = "NORMAL_RANGE"
+            gp_badge = f"⚪ RELIEF FIB ZONE (Testing Retracement from ₹{sw_l:,.2f} Low)"
 
     return {
         "swing_high": sw_h,
         "swing_low": sw_l,
+        "is_uptrend_swing": is_uptrend_swing,
         "fib_236": fib_236,
         "fib_382": fib_382,
         "fib_500": fib_500,
@@ -253,13 +313,16 @@ def detect_candlestick_and_chart_patterns(candles: List[Dict[str, float]]) -> Di
     """
     Detects high-probability Candlestick Reversals (Hammer, Engulfing, Morning/Evening Star)
     and Classical Chart Patterns (Double Bottom/Top, Bull Flag).
+    Drops forming, unclosed candle during market hours to prevent repainting.
     """
-    if len(candles) < 5:
+    # Use only closed historical candles during market hours to avoid repainting
+    eval_candles = candles[:-1] if (is_market_hours_ist() and len(candles) >= 6) else candles
+    if len(eval_candles) < 5:
         return {"pattern": None, "badge": "⚪ NO PATTERN", "direction": "NEUTRAL", "score": 0.0}
 
-    c = candles[-1]
-    p1 = candles[-2]
-    p2 = candles[-3]
+    c = eval_candles[-1]
+    p1 = eval_candles[-2]
+    p2 = eval_candles[-3]
 
     body = abs(c["close"] - c["open"])
     candle_range = max(0.01, c["high"] - c["low"])
@@ -323,8 +386,8 @@ def detect_candlestick_and_chart_patterns(candles: List[Dict[str, float]]) -> Di
         }
 
     # 7. Classical Double Bottom / Double Top
-    if len(candles) >= 30:
-        recent_lows = [candles[k]["low"] for k in range(-30, -5)]
+    if len(eval_candles) >= 30:
+        recent_lows = [eval_candles[k]["low"] for k in range(-30, -5)]
         min_prev_low = min(recent_lows)
         curr_min_low = min(c["low"], p1["low"])
         if abs(curr_min_low - min_prev_low) / min_prev_low <= 0.012 and c["close"] >= c["open"]:
@@ -335,7 +398,7 @@ def detect_candlestick_and_chart_patterns(candles: List[Dict[str, float]]) -> Di
                 "score": 12.0
             }
 
-        recent_highs = [candles[k]["high"] for k in range(-30, -5)]
+        recent_highs = [eval_candles[k]["high"] for k in range(-30, -5)]
         max_prev_high = max(recent_highs)
         curr_max_high = max(c["high"], p1["high"])
         if abs(curr_max_high - max_prev_high) / max_prev_high <= 0.012 and c["close"] <= c["open"]:
@@ -385,6 +448,58 @@ def get_nifty_benchmark(session: requests.Session) -> Optional[Dict[str, float]]
         return None
 
 
+def simulate_trade(candles: List[Dict[str, float]], i: int, direction: str, atr: float, tgt_mult: float = 1.5, sl_mult: float = 1.0, max_days: int = 10, cost_pct: float = 0.25) -> Dict[str, Any]:
+    """
+    Conservative Trade Simulator:
+    Entry at next open. Stop is checked BEFORE target inside a bar, gaps fill at the open,
+    and a round-trip friction cost (in %) is deducted.
+    """
+    entry = candles[i + 1]["open"]
+    long_ = direction == "BUY"
+    tgt = entry + tgt_mult * atr if long_ else entry - tgt_mult * atr
+    sl = entry - sl_mult * atr if long_ else entry + sl_mult * atr
+    exit_p, days = None, 0
+    for j in range(i + 1, min(i + 1 + max_days, len(candles))):
+        days += 1
+        o, h, l = candles[j]["open"], candles[j]["high"], candles[j]["low"]
+        if long_:
+            if o <= sl:
+                exit_p = o
+            elif l <= sl:
+                exit_p = sl
+            elif o >= tgt:
+                exit_p = o
+            elif h >= tgt:
+                exit_p = tgt
+        else:
+            if o >= sl:
+                exit_p = o
+            elif h >= sl:
+                exit_p = sl
+            elif o <= tgt:
+                exit_p = o
+            elif l <= tgt:
+                exit_p = tgt
+        if exit_p is not None:
+            break
+    if exit_p is None:
+        exit_p = candles[min(i + max_days, len(candles) - 1)]["close"]
+    pnl = (exit_p - entry) / entry * 100 if long_ else (entry - exit_p) / entry * 100
+    pnl -= cost_pct
+    return {
+        "type": direction,
+        "entry": round(entry, 2),
+        "entry_price": round(entry, 2),
+        "exit": round(exit_p, 2),
+        "exit_price": round(exit_p, 2),
+        "pnl": round(pnl, 2),
+        "pnl_pct": round(pnl, 2),
+        "days": days,
+        "outcome": "WIN" if pnl > 0 else "LOSS",
+        "is_win": pnl > 0
+    }
+
+
 class StockPredictor:
     def __init__(self, symbol: str):
         self.symbol = symbol.strip().upper().replace(".NS", "")
@@ -419,56 +534,92 @@ class StockPredictor:
             vwap = round((day_high + day_low + ltp) / 3.0, 2)
             dist_52w_high_pct = round(((w52_high - ltp) / w52_high) * 100, 2) if w52_high > 0 else 0.0
 
-            # Default / exchange enriched fundamentals
+            # Default / exchange enriched fundamentals (honest N/A initialization)
             company_name = self.symbol
             industry = "Equity"
-            stock_pe = 22.5
-            sector_pe = 24.0
-            deliv_pct = 48.2
-            deliv_qty = int(total_vol * 0.48)
-            total_mcap = round(total_vol * ltp * 15.0, 2)
-            ffmc = round(total_mcap * 0.45, 2)
-            impact_cost = 0.02
+            stock_pe = None
+            sector_pe = None
+            deliv_pct, deliv_qty = 0.0, 0
+            total_mcap = 0
+            ffmc = 0
+            impact_cost = 0.0
+            nse_enriched = False
 
-            # Try to enrich company name & fundamentals from NSE if available
+            # Try to enrich company name, real VWAP & fundamentals from NSE if available
             try:
                 import nsepython
                 data = nsepython.nse_quote(self.symbol)
                 if data and isinstance(data, dict):
+                    nse_enriched = True
                     eq_resp = data.get("equityResponse", [{}])[0] if data.get("equityResponse") else data
                     meta = eq_resp.get("metaData", {})
                     trade = eq_resp.get("tradeInfo", {})
                     sec = eq_resp.get("secInfo", {})
+                    pinfo = eq_resp.get("priceInfo", {})
 
                     if meta.get("companyName"):
                         company_name = meta["companyName"]
                     if sec.get("industryInfo") or sec.get("sector"):
                         industry = sec.get("industryInfo") or sec.get("sector")
-                    if trade.get("deliveryToTradedQuantity"):
-                        deliv_pct = float(trade["deliveryToTradedQuantity"])
-                    if trade.get("deliveryquantity"):
-                        deliv_qty = int(trade["deliveryquantity"])
-                    if trade.get("totalMarketCap"):
-                        total_mcap = float(trade["totalMarketCap"])
-                    if trade.get("ffmc"):
-                        ffmc = float(trade["ffmc"])
-                    if trade.get("impactCost"):
-                        impact_cost = float(trade["impactCost"])
-                    if sec.get("pdSymbolPe"):
+                    if trade.get("deliveryToTradedQuantity") is not None:
                         try:
-                            stock_pe = float(sec["pdSymbolPe"])
+                            deliv_pct = float(trade["deliveryToTradedQuantity"])
                         except Exception:
                             pass
-                    if sec.get("pdSectorPe"):
+                    if trade.get("deliveryquantity") is not None:
                         try:
-                            sector_pe = float(sec["pdSectorPe"])
+                            deliv_qty = int(trade["deliveryquantity"])
+                        except Exception:
+                            pass
+                    if trade.get("totalMarketCap") is not None:
+                        try:
+                            total_mcap = float(trade["totalMarketCap"])
+                        except Exception:
+                            pass
+                    if trade.get("ffmc") is not None:
+                        try:
+                            ffmc = float(trade["ffmc"])
+                        except Exception:
+                            pass
+                    if trade.get("impactCost") is not None:
+                        try:
+                            impact_cost = float(trade["impactCost"])
+                        except Exception:
+                            pass
+                    if sec.get("pdSymbolPe") is not None:
+                        try:
+                            val_p = float(sec["pdSymbolPe"])
+                            if val_p > 0:
+                                stock_pe = val_p
+                        except Exception:
+                            pass
+                    if sec.get("pdSectorPe") is not None:
+                        try:
+                            val_s = float(sec["pdSectorPe"])
+                            if val_s > 0:
+                                sector_pe = val_s
+                        except Exception:
+                            pass
+
+                    # Extract exchange reported VWAP if available
+                    if pinfo.get("vwap"):
+                        try:
+                            vwap = round(float(pinfo["vwap"]), 2)
+                        except Exception:
+                            pass
+                    elif trade.get("totalTradedValue") and trade.get("totalTradedVolume"):
+                        try:
+                            t_val = float(trade["totalTradedValue"])
+                            t_vol = float(trade["totalTradedVolume"])
+                            if t_vol > 0:
+                                vwap = round(t_val / t_vol, 2)
                         except Exception:
                             pass
             except Exception:
                 pass
 
-            # Valuation classification
-            if stock_pe > 0 and sector_pe > 0:
+            # Honest Valuation classification without fabricated numbers
+            if stock_pe and sector_pe and stock_pe > 0 and sector_pe > 0:
                 if stock_pe <= sector_pe * 0.85:
                     val_verdict = f"🟢 UNDERVALUED (P/E {stock_pe:.1f}x vs Sector {sector_pe:.1f}x)"
                     val_status = "UNDERVALUED"
@@ -479,10 +630,7 @@ class StockPredictor:
                     val_verdict = f"⚪ FAIR VALUE (P/E {stock_pe:.1f}x vs Sector {sector_pe:.1f}x)"
                     val_status = "FAIR_VALUE"
             else:
-                val_verdict = "⚪ FAIR VALUE (Sector Benchmarked)"
-                val_status = "FAIR_VALUE"
-                stock_pe = 22.5
-                sector_pe = 24.0
+                val_verdict, val_status = "⚪ VALUATION N/A", "UNKNOWN"
             return {
                 "symbol": self.symbol,
                 "company_name": company_name,
@@ -508,6 +656,7 @@ class StockPredictor:
                 "total_mcap": total_mcap,
                 "ffmc": ffmc,
                 "impact_cost": impact_cost,
+                "nse_enriched": nse_enriched,
                 "timestamp": datetime.now().strftime("%d-%b-%Y %H:%M:%S")
             }
         except Exception:
@@ -658,12 +807,19 @@ class StockPredictor:
         """
         try:
             ticker = f"{self.symbol}.NS"
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1y"
-            res = self.session.get(url, timeout=6)
-            if res.status_code != 200:
-                return None
+            now = time.time()
+            data = None
+            if ticker in _YAHOO_HISTORY_CACHE and (now - _YAHOO_HISTORY_CACHE[ticker].get("time", 0)) < 3600:
+                data = _YAHOO_HISTORY_CACHE[ticker]["data"]
+            else:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1y"
+                res = self.session.get(url, timeout=6)
+                if res.status_code == 200:
+                    data = res.json()
+                    _YAHOO_HISTORY_CACHE[ticker] = {"time": now, "data": data}
 
-            data = res.json()
+            if not data:
+                return None
             result = data.get("chart", {}).get("result", [])
             if not result:
                 return None
@@ -714,11 +870,21 @@ class StockPredictor:
             if atr14 <= 0:
                 atr14 = round(close_series[-1] * 0.015, 2)
 
-            # 20-day Average Daily Volume (ADV) & RVOL
+            # 20-day Average Daily Volume (ADV) & Prorated Relative Volume (RVOL)
             vol_series = [c["volume"] for c in candles if c["volume"] > 0]
-            adv20 = sum(vol_series[-20:]) / min(20, len(vol_series)) if vol_series else 1
+            past_vols = vol_series[:-1] if len(vol_series) > 1 else vol_series
+            adv20 = sum(past_vols[-20:]) / min(20, len(past_vols)) if past_vols else 1
             latest_vol = vol_series[-1] if vol_series else 1
-            rvol = round(latest_vol / adv20, 2) if adv20 > 0 else 1.0
+
+            if is_market_hours_ist():
+                now_utc = datetime.now(timezone.utc)
+                ist = now_utc + timedelta(hours=5, minutes=30)
+                mins_elapsed = max(15, (ist.hour * 60 + ist.minute) - 555)  # 555 = 09:15 AM
+                session_frac = min(1.0, mins_elapsed / 375.0)  # 375 min session
+                projected_vol = latest_vol / session_frac
+                rvol = round(projected_vol / adv20, 2) if adv20 > 0 else 1.0
+            else:
+                rvol = round(latest_vol / adv20, 2) if adv20 > 0 else 1.0
 
             # Floor Pivots
             prev_day = candles[-2] if len(candles) >= 2 else candles[-1]
@@ -910,22 +1076,29 @@ class StockPredictor:
             bear_points = 0.0
             top_catalyst = None
 
-            for it in items[:10]:
+            seen_titles = set()
+            for it in items[:15]:
                 title = it.find("title").text if it.find("title") is not None else ""
                 if not title:
                     continue
+
+                # Deduplicate similar/identical syndicated headlines
+                clean_title = " ".join(title.lower().split()[:8])
+                if clean_title in seen_titles:
+                    continue
+                seen_titles.add(clean_title)
 
                 headlines.append(title)
                 t_lower = title.lower()
 
                 for kw, weight in BULLISH_STOCK_KEYWORDS.items():
-                    if kw in t_lower:
+                    if _kw_hit(kw, t_lower):
                         bull_points += weight
                         if weight >= 2.5 and not top_catalyst:
                             top_catalyst = f"🟢 Bullish Catalyst: '{title}'"
 
                 for kw, weight in BEARISH_STOCK_KEYWORDS.items():
-                    if kw in t_lower:
+                    if _kw_hit(kw, t_lower):
                         bear_points += weight
                         if weight >= 2.5 and not top_catalyst:
                             top_catalyst = f"🔴 Bearish Risk: '{title}'"
@@ -963,16 +1136,16 @@ class StockPredictor:
             data = p_res.get('resCmpData', []) if isinstance(p_res, dict) else []
             if not data:
                 return {
-                    "has_results": True,
-                    "period": "Recent Financial Year",
-                    "revenue_cr": "₹-- Cr",
-                    "net_profit_cr": "₹-- Cr",
-                    "eps": "₹--",
-                    "net_margin": "Steady",
-                    "yoy_pat_growth": "+12.4% YoY",
-                    "verdict": "🟢 SOLID FINANCIAL HEALTH",
-                    "status": "STEADY",
-                    "summary": f"{self.symbol} maintains resilient operational profitability filed with the Exchange."
+                    "has_results": False,
+                    "period": "N/A",
+                    "revenue_cr": "N/A",
+                    "net_profit_cr": "N/A",
+                    "eps": "N/A",
+                    "net_margin": "N/A",
+                    "yoy_pat_growth": None,
+                    "verdict": "⚪ RESULTS UNAVAILABLE",
+                    "status": "UNKNOWN",
+                    "summary": "Results data unavailable."
                 }
 
             q0 = data[0]
@@ -1027,11 +1200,11 @@ class StockPredictor:
                 verdict = "🟢 STEADY OPERATING PERFORMANCE"
                 status = "STEADY"
 
-            yoy_str = f"{yoy_pat_growth:+.1f}% YoY" if yoy_pat_growth is not None else "+12.4% YoY"
+            yoy_str = f"{yoy_pat_growth:+.1f}% YoY" if yoy_pat_growth is not None else "N/A"
             rev_str = f"₹{sale_cr:,.1f} Cr" if sale_cr > 0 else "₹-- Cr"
             pat_str = f"₹{pat_cr:,.1f} Cr" if pat_cr > 0 else "₹-- Cr"
             eps_str = f"₹{eps_num:.2f}" if eps_num > 0 else "₹--"
-            margin_str = f"{op_margin:.1f}%" if op_margin > 0 else "Steady"
+            margin_str = f"{op_margin:.1f}%" if op_margin > 0 else "N/A"
 
             return {
                 "has_results": True,
@@ -1047,16 +1220,16 @@ class StockPredictor:
             }
         except Exception:
             return {
-                "has_results": True,
-                "period": "Recent Quarter",
-                "revenue_cr": "₹-- Cr",
-                "net_profit_cr": "₹-- Cr",
-                "eps": "₹--",
-                "net_margin": "Steady",
-                "yoy_pat_growth": "+12.4% YoY",
-                "verdict": "🟢 SOLID FINANCIAL HEALTH",
-                "status": "STEADY",
-                "summary": f"{self.symbol} financial fundamentals verified with resilient operating cash flows."
+                "has_results": False,
+                "period": "N/A",
+                "revenue_cr": "N/A",
+                "net_profit_cr": "N/A",
+                "eps": "N/A",
+                "net_margin": "N/A",
+                "yoy_pat_growth": None,
+                "verdict": "⚪ RESULTS UNAVAILABLE",
+                "status": "UNKNOWN",
+                "summary": "Results data unavailable."
             }
 
     def predict_price_movement(self) -> Dict[str, Any]:
@@ -1197,13 +1370,16 @@ class StockPredictor:
                     bear_factors.append(f"Bearish Option PCR ({pcr:.2f}) — Heavy Call Writing Overhead")
 
             max_pain = fno.get("max_pain")
-            if max_pain:
+            days_to_exp = get_days_to_expiry()
+            # Max Pain gravitational pull is only valid in the final 3-4 days before expiry
+            if max_pain and days_to_exp <= 4:
+                weight = 4.0 if days_to_exp <= 2 else 2.0
                 if ltp < max_pain * 0.985:
-                    prediction_score += 4.0
-                    bull_factors.append(f"Max Pain Gravity: LTP below Max Pain (₹{max_pain:.2f}) pulls price upward")
+                    prediction_score += weight
+                    bull_factors.append(f"Max Pain Gravity ({days_to_exp}d to expiry): LTP below Max Pain (₹{max_pain:.2f}) pulls price upward")
                 elif ltp > max_pain * 1.015:
-                    prediction_score -= 4.0
-                    bear_factors.append(f"Max Pain Gravity: LTP above Max Pain (₹{max_pain:.2f}) exerts downward pull")
+                    prediction_score -= weight
+                    bear_factors.append(f"Max Pain Gravity ({days_to_exp}d to expiry): LTP above Max Pain (₹{max_pain:.2f}) exerts downward pull")
 
         # 7. Supertrend (10, 3)
         if tech and "supertrend" in tech:
@@ -1374,21 +1550,40 @@ class StockPredictor:
         is_rec = prediction_score >= 53.0
 
         # 1. Fundamental Valuation Reason
-        stk_pe = nse_data.get("stock_pe", 20.0)
-        sec_pe = nse_data.get("sector_pe", 22.0)
-        val_vd = nse_data.get("val_verdict", "⚪ FAIR VALUE")
+        stk_pe = nse_data.get("stock_pe")
+        sec_pe = nse_data.get("sector_pe")
+        val_vd = nse_data.get("val_verdict", "⚪ VALUATION N/A")
         mcap_val = nse_data.get("total_mcap", 0)
-        mcap_cr = f"₹{mcap_val / 10000000:,.0f} Cr" if mcap_val else "Large-Cap"
-        fund_reason = f"P/E is {stk_pe} vs Sector P/E {sec_pe} ({val_vd}). Total Market Cap: {mcap_cr}. Healthy valuation cushion provides strong fundamental margin of safety."
+        mcap_cr = f"₹{mcap_val / 10000000:,.0f} Cr" if mcap_val else "N/A"
+
+        if stk_pe and sec_pe and stk_pe > 0 and sec_pe > 0:
+            if nse_data.get("val_status") == "UNDERVALUED":
+                val_note = "Valuation discount relative to sector provides fundamental margin of safety."
+            elif nse_data.get("val_status") == "OVERVALUED":
+                val_note = "Trading at a premium to sector multiples; growth delivery required."
+            else:
+                val_note = "Valuation is broadly in line with sector multiples."
+            fund_reason = f"P/E is {stk_pe:.1f}x vs Sector P/E {sec_pe:.1f}x ({val_vd}). Total Market Cap: {mcap_cr}. {val_note}"
+        else:
+            fund_reason = f"Valuation ({val_vd}): Official exchange P/E metrics unavailable for standalone comparison. Total Market Cap: {mcap_cr}."
 
         # 2. Quarterly Financial Results Reason
-        res_period = results.get("period", "Latest Quarter")
-        res_rev = results.get("revenue_cr", "₹-- Cr")
-        res_pat = results.get("net_profit_cr", "₹-- Cr")
-        res_yoy = results.get("yoy_pat_growth", "+12.4% YoY")
-        res_margin = results.get("net_margin", "Steady")
-        res_verdict = results.get("verdict", "🟢 SOLID EARNINGS")
-        results_reason = f"Official NSE filing ({res_period}): Net Sales {res_rev}, PAT {res_pat} ({res_yoy}) with {res_margin} operating profit margin ({res_verdict})."
+        res_period = results.get("period", "N/A")
+        res_rev = results.get("revenue_cr", "N/A")
+        res_pat = results.get("net_profit_cr", "N/A")
+        res_yoy = results.get("yoy_pat_growth")
+        if isinstance(res_yoy, (int, float)):
+            res_yoy_str = f"{res_yoy:+.1f}% YoY"
+        elif res_yoy and str(res_yoy).strip() not in ("None", "N/A"):
+            res_yoy_str = str(res_yoy)
+        else:
+            res_yoy_str = "N/A"
+        res_margin = results.get("net_margin", "N/A")
+        res_verdict = results.get("verdict", "⚪ RESULTS UNAVAILABLE")
+        if results.get("has_results"):
+            results_reason = f"Official NSE filing ({res_period}): Net Sales {res_rev}, PAT {res_pat} ({res_yoy_str}) with {res_margin} operating profit margin ({res_verdict})."
+        else:
+            results_reason = "Official quarterly financial results not reported or unavailable from exchange feed."
 
         # 3. News, Institutional Catalysts & Broker Coverage Reason
         news_score = news.get("score", 0.0)
@@ -1398,29 +1593,40 @@ class StockPredictor:
             raw_hl = news["headlines"][0]
             first_hl = raw_hl["title"] if isinstance(raw_hl, dict) else str(raw_hl)
         else:
-            first_hl = "Positive broker & institutional coverage"
-        news_reason = f"{news_badge} (Sentiment Score: {news_score:+.1f}). Catalyst: {top_cat or 'Favorable macro tailwinds & sector momentum'}. Headline: \"{first_hl[:95]}...\""
+            first_hl = "No major breaking headlines"
+        news_reason = f"{news_badge} (Sentiment Score: {news_score:+.1f}). Catalyst: {top_cat or 'General macro and sector momentum'}. Headline: \"{first_hl[:95]}...\""
 
         # 4. Technicals, Institutional Delivery & Derivatives Reason
-        st_badge = tech.get("supertrend", {}).get("badge", f"Support @ ₹{ltp*0.98:.2f}") if tech else "Bullish"
-        fno_build = fno.get("buildup_badge", "Cash Equity Accumulation") if fno else "Cash Accumulation"
-        tech_reason = f"Institutional Delivery volume at {deliv_pct:.1f}%. Supertrend {st_badge}. Holding above 20 EMA (₹{ema20:.2f}). Derivative Flow: {fno_build}."
+        deliv_str = f"Institutional Delivery volume at {deliv_pct:.1f}%" if deliv_pct > 0 else "Delivery volume: N/A"
+        ma_rel = f"Holding above 20 EMA (₹{ema20:.2f})" if ltp >= ema20 else f"Trading below 20 EMA (₹{ema20:.2f})"
+        st_badge = tech.get("supertrend", {}).get("badge", "Supertrend Neutral") if tech else "Neutral"
+        fno_build = fno.get("buildup_badge", "Cash Equity Only") if fno else "Cash Equity Only"
+        tech_reason = f"{deliv_str}. Supertrend: {st_badge}. {ma_rel}. Derivative Flow: {fno_build}."
 
         # Check catalyst criteria (News, Breakout, Earnings Beat)
         has_news = bool(news.get("headlines") and len(news["headlines"]) > 0)
-        has_pos_news = bool(news_score >= 15.0 or (news.get("bull_pts", 0) >= 2.0))
-        
+        has_pos_news = bool(news_score >= 20.0 or (news.get("bull_pts", 0) >= 3.0))
+
         is_st_bull = tech.get("supertrend", {}).get("status") == "BULLISH" if tech else False
         is_fno_long = fno.get("buildup") == "LONG_BUILDUP" if fno else False
-        is_deliv_spike = deliv_pct >= 40.0
-        is_vol_breakout = rvol >= 1.20
-        is_52w_near = nse_data.get("dist_52w_high_pct", 100) <= 5.0
-        has_breakout = is_deliv_spike or is_vol_breakout or is_st_bull or is_fno_long or is_52w_near
-
+        is_deliv_spike = deliv_pct >= 45.0
+        is_vol_breakout = rvol >= 1.35
+        is_52w_near = nse_data.get("dist_52w_high_pct", 100) <= 4.0 and p_chg > 0
         has_results_beat = bool(results.get("status") in ("BEAT", "POSITIVE"))
 
-        # Candidate for suggestion: Only stocks with news, breakout, or positive catalyst
-        is_suggested = (has_news and has_pos_news) or has_breakout or has_results_beat
+        # Require multiple independent conditions for genuine suggested breakouts
+        triggers_met = sum([
+            1 if is_deliv_spike else 0,
+            1 if is_vol_breakout else 0,
+            1 if is_st_bull else 0,
+            1 if is_fno_long else 0,
+            1 if has_pos_news else 0,
+            1 if has_results_beat else 0,
+            1 if is_52w_near else 0
+        ])
+
+        has_breakout = triggers_met >= 2 and (is_vol_breakout or is_st_bull or is_deliv_spike)
+        is_suggested = is_rec and triggers_met >= 2 and prediction_score >= 58.0
 
         # Build specific "Why This Stock Is Rising" statement
         rising_reasons = []
@@ -1572,6 +1778,13 @@ class StockPredictor:
                 },
                 "bull_reasons": bull_factors,
                 "bear_reasons": bear_factors
+            },
+            "data_quality": {
+                "nse_enriched": nse_data.get("nse_enriched", False),
+                "fno_available": fno.get("has_fno", False),
+                "has_results": results.get("has_results", False),
+                "news_count": len(news.get("headlines", [])),
+                "is_market_hours": is_market_hours_ist()
             }
         }
 
@@ -1600,20 +1813,20 @@ class StockPredictor:
                 "week_52_high": ltp * 1.25,
                 "week_52_low": ltp * 0.85,
                 "dist_52w_high_pct": 20.0,
-                "delivery_pct": 45.0,
+                "delivery_pct": 0.0,
                 "delivery_qty": 0,
                 "total_volume": int(meta.get("regularMarketVolume", 100000)),
                 "total_value": 0.0,
                 "fundamentals": {
-                    "stock_pe": 20.0, "sector_pe": 20.0, "val_verdict": "⚪ FAIR VALUE",
-                    "total_mcap": 100000000000, "ffmc": 50000000000, "impact_cost": 0.02
+                    "stock_pe": None, "sector_pe": None, "val_verdict": "⚪ VALUATION N/A",
+                    "total_mcap": 0, "ffmc": 0, "impact_cost": 0.0
                 },
                 "fno": {"has_fno": False, "badge": "⚪ CASH ONLY", "buildup_badge": "⚪ Cash Only", "pcr_badge": "N/A"},
                 "technicals": {
                     "ema20": ltp, "ema50": ltp, "rsi14": 50.0, "atr14": ltp * 0.018,
                     "rvol": 1.0, "pivot": ltp, "r1": ltp * 1.018, "r2": ltp * 1.035,
                     "s1": ltp * 0.982, "s2": ltp * 0.965,
-                    "supertrend": {"value": ltp * 0.985, "status": "BULLISH", "badge": f"Support @ ₹{ltp * 0.985:.2f}"},
+                    "supertrend": {"value": ltp * 0.985, "status": "NEUTRAL", "badge": "⚪ NEUTRAL"},
                     "bb_badge": "⚪ NORMAL", "rs_badge": "⚪ IN-LINE", "gp_badge": "⚪ NORMAL FIB",
                     "patterns": {"badge": "⚪ NO PATTERN"}
                 },
@@ -1621,53 +1834,58 @@ class StockPredictor:
                 "mtf_badge": "⚪ NEUTRAL",
                 "news": {"score": 0.0, "badge": "⚪ NEUTRAL", "headlines": [], "catalyst": None},
                 "quarterly_results": {
-                    "has_results": True,
-                    "period": "Recent Quarter",
-                    "revenue_cr": "₹-- Cr",
-                    "net_profit_cr": "₹-- Cr",
-                    "eps": "₹--",
-                    "net_margin": "Steady",
-                    "yoy_pat_growth": "+12.4% YoY",
-                    "verdict": "🟢 SOLID FINANCIAL HEALTH",
-                    "status": "STEADY",
-                    "summary": f"{self.symbol} maintains resilient operational profitability."
+                    "has_results": False,
+                    "period": "N/A",
+                    "revenue_cr": "N/A",
+                    "net_profit_cr": "N/A",
+                    "eps": "N/A",
+                    "net_margin": "N/A",
+                    "yoy_pat_growth": None,
+                    "verdict": "⚪ RESULTS UNAVAILABLE",
+                    "status": "UNKNOWN",
+                    "summary": "Results data unavailable."
                 },
                 "ai_growth_thesis": {
-                    "is_recommended": True,
-                    "is_suggested": True,
-                    "has_news": True,
-                    "has_breakout": True,
-                    "has_positive_news": True,
-                    "active_triggers": ["📈 Technical Support", "📑 Steady Margins"],
-                    "why_rising": f"Holding steady accumulation baseline with 5% projected upside above key support ₹{ltp * 0.985:.2f}.",
-                    "recommendation": "🟢 ACCUMULATE ON DIPS",
-                    "conviction_score": 58.0,
-                    "win_probability": 65,
-                    "target_price": round(ltp * 1.05, 2),
-                    "target_pct": 5.0,
-                    "stop_loss": round(ltp * 0.975, 2),
-                    "stop_loss_pct": -2.5,
-                    "risk_reward": "1 : 2.0",
-                    "time_horizon": "1 - 3 Weeks (Swing / Positional)",
-                    "growth_catalyst": "Fundamental Value & Technical Equilibrium",
+                    "is_recommended": False,
+                    "is_suggested": False,
+                    "has_news": False,
+                    "has_breakout": False,
+                    "has_positive_news": False,
+                    "active_triggers": [],
+                    "why_rising": "Live NSE exchange feed unavailable; snapshot only.",
+                    "recommendation": "⚪ NO RECOMMENDATION (DATA UNAVAILABLE)",
+                    "conviction_score": 50.0,
+                    "win_probability": 50,
+                    "target_price": None,
+                    "target_pct": 0.0,
+                    "stop_loss": None,
+                    "stop_loss_pct": 0.0,
+                    "risk_reward": "N/A",
+                    "time_horizon": "N/A",
+                    "growth_catalyst": "None",
                     "reasons": {
-                        "fundamentals": "P/E is 20.0 vs Sector P/E 20.0 (⚪ FAIR VALUE). Healthy balance sheet headroom.",
-                        "results": "Official NSE filing: Net Sales consistent with industry peers and positive operating margin.",
-                        "news": "⚪ NEUTRAL NEWS FLOW. Balanced institutional mentions across financial media.",
-                        "technicals": f"Support holding at ₹{ltp * 0.985:.2f}. Consolidating above key swing levels."
+                        "fundamentals": "Valuation data unavailable.",
+                        "results": "Quarterly results unavailable.",
+                        "news": "News sentiment unavailable.",
+                        "technicals": "Fallback snapshot only."
                     },
-                    "summary_thesis": f"AI Growth Thesis: {self.symbol} exhibits steady baseline accumulation with 5.0% projected upside towards Target ₹{ltp * 1.05:,.2f} and protective Stoploss at ₹{ltp * 0.975:,.2f}."
+                    "summary_thesis": "Live NSE data unavailable; no analysis generated."
                 },
                 "prediction": {
                     "score": 50.0,
                     "direction": "⚪ NEUTRAL / CONSOLIDATION",
                     "bias_badge": "⚪ BALANCED",
                     "prob_win": 50,
-                    "short_term": {"horizon": "Short-Term", "target": ltp * 1.018, "target_pct": 1.8, "stop_loss": ltp * 0.985, "stop_loss_pct": -1.5, "rr_ratio": "1 : 1.2", "drivers": "Pivots"},
-                    "mid_term": {"horizon": "Mid-Term", "target": ltp * 1.035, "target_pct": 3.5, "stop_loss": ltp * 0.975, "stop_loss_pct": -2.5, "rr_ratio": "1 : 1.4", "drivers": "Supertrend"},
-                    "long_term": {"horizon": "Long-Term", "target": ltp * 1.10, "target_pct": 10.0, "stop_loss": ltp * 0.94, "stop_loss_pct": -6.0, "rr_ratio": "1 : 1.6", "drivers": "Macro"},
-                    "bull_reasons": ["Price holding baseline equilibrium"],
-                    "bear_reasons": ["Awaiting high volume breakout"]
+                    "short_term": {"horizon": "Short-Term", "target": ltp, "target_pct": 0.0, "stop_loss": ltp, "stop_loss_pct": 0.0, "rr_ratio": "1 : 1.0", "drivers": "N/A"},
+                    "mid_term": {"horizon": "Mid-Term", "target": ltp, "target_pct": 0.0, "stop_loss": ltp, "stop_loss_pct": 0.0, "rr_ratio": "1 : 1.0", "drivers": "N/A"},
+                    "long_term": {"horizon": "Long-Term", "target": ltp, "target_pct": 0.0, "stop_loss": ltp, "stop_loss_pct": 0.0, "rr_ratio": "1 : 1.0", "drivers": "N/A"},
+                    "bull_reasons": [],
+                    "bear_reasons": ["Live NSE exchange feed unavailable"]
+                },
+                "data_quality": {
+                    "nse_enriched": False,
+                    "source": "Yahoo Fallback",
+                    "warning": "Live NSE data unavailable; no analysis generated."
                 }
             }
         except Exception:
@@ -1737,46 +1955,13 @@ class StockPredictor:
                     bear_trigger = True
 
                 if bull_trigger:
-                    entry = candles[i + 1]["open"]
-                    target = entry + (1.5 * atr)
-                    sl = entry - (1.0 * atr)
-                    outcome, exit_p, days = "HOLD", entry, 0
-                    for j in range(i + 1, min(i + 11, len(candles))):
-                        days += 1
-                        if candles[j]["high"] >= target:
-                            outcome, exit_p = "WIN", target
-                            break
-                        elif candles[j]["low"] <= sl:
-                            outcome, exit_p = "LOSS", sl
-                            break
-                    if outcome == "HOLD":
-                        exit_p = candles[min(i + 10, len(candles) - 1)]["close"]
-                        outcome = "WIN" if exit_p > entry else "LOSS"
-
-                    pnl = round(((exit_p - entry) / entry) * 100, 2)
-                    trades.append({"type": "BUY", "entry": entry, "exit": exit_p, "pnl": pnl, "outcome": outcome, "days": days})
-                    i += max(1, days)
-
+                    t = simulate_trade(candles, i, "BUY", atr)
+                    trades.append(t)
+                    i += max(1, t["days"])
                 elif bear_trigger:
-                    entry = candles[i + 1]["open"]
-                    target = entry - (1.5 * atr)
-                    sl = entry + (1.0 * atr)
-                    outcome, exit_p, days = "HOLD", entry, 0
-                    for j in range(i + 1, min(i + 11, len(candles))):
-                        days += 1
-                        if candles[j]["low"] <= target:
-                            outcome, exit_p = "WIN", target
-                            break
-                        elif candles[j]["high"] >= sl:
-                            outcome, exit_p = "LOSS", sl
-                            break
-                    if outcome == "HOLD":
-                        exit_p = candles[min(i + 10, len(candles) - 1)]["close"]
-                        outcome = "WIN" if exit_p < entry else "LOSS"
-
-                    pnl = round(((entry - exit_p) / entry) * 100, 2)
-                    trades.append({"type": "SHORT", "entry": entry, "exit": exit_p, "pnl": pnl, "outcome": outcome, "days": days})
-                    i += max(1, days)
+                    t = simulate_trade(candles, i, "SHORT", atr)
+                    trades.append(t)
+                    i += max(1, t["days"])
                 else:
                     i += 1
 
@@ -1797,10 +1982,12 @@ class StockPredictor:
                 "wins": len(wins),
                 "losses": len(losses),
                 "win_rate": wr,
+                "win_rate_pct": wr,
                 "profit_factor": pf,
                 "net_pnl": net_pnl,
+                "total_return_pct": net_pnl,
                 "buy_and_hold_pnl": b_and_h,
-                "recent_trades": trades[-6:]
+                "recent_trades": trades[-8:]
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1826,16 +2013,17 @@ def display_backtest_report(bt: Dict[str, Any]):
     print("=" * 82)
     print(f" Asset Symbol     : {sym}.NS on National Stock Exchange of India (NSE)")
     print(f" Historical Scope : Past {bt['candles_count']} Daily Sessions (Walk-Forward Simulation)")
-    print(f" Macro Confluence : Multi-Timeframe Alignment (Supertrend + EMAs + ATR Targets)")
+    print(f" Execution Model  : Next-Bar Open, Stop Checked Before Target, Gaps at Open, 0.25% Friction")
     print("-" * 82)
     print(f" 📊 PERFORMANCE SUMMARY METRICS:")
     print(f"    Total Signals : {tot} Setups Generated  ({w} Winning Trades | {l} Losses)")
-    print(f"    Win Rate %    : {wr:.1f}%  [{'🟢 HIGH ACCURACY' if wr >= 65 else ('🟢 CONSISTENT EDGE' if wr >= 50 else '⚪ CONSOLIDATION')}]")
+    print(f"    Win Rate %    : {wr:.1f}%  (Baseline Coin-Flip: ~40.0% for 1.5R : 1.0R target/stop)")
     print(f"    Profit Factor : {pf:.2f}x  (Gross Wins / Gross Losses)")
-    print(f"    Strategy P&L  : {net:+.2f}% Cumulative Return")
-    print(f"    Buy & Hold    : {b_and_h:+.2f}% Stock Buy & Hold Return")
-    alpha = round(net - b_and_h, 2)
-    print(f"    Alpha Edge    : {alpha:+.2f}% Outperformance vs Passive Buy-and-Hold")
+    print(f"    Strategy P&L  : {net:+.2f}% Cumulative Sum of Trades (After 0.25% friction per trade)")
+    print(f"    Buy & Hold    : {b_and_h:+.2f}% Underlying Asset Price Return")
+    print("-" * 82)
+    print(" ℹ️  Execution Note: Short trades on cash equities are intraday only on NSE.")
+    print("     Holding SHORT overnight requires F&O Stock Futures or Options.")
     print("-" * 82)
 
     print(f" 📜 RECENT TRADE EXECUTIONS (Last {len(bt['recent_trades'])} Setups):")
@@ -1965,7 +2153,12 @@ def display_stock_prediction(report: Dict[str, Any]):
 
     print(f" 🎯 AI PREDICTION & MULTI-HORIZON TARGETS:")
     print(f"    Verdict       : {pred['direction']} [{pred['bias_badge']}]")
-    print(f"    Confidence    : {pred['score']:.1f}/100 (Probability: {pred['prob_win']}%)")
+    print(f"    Confidence    : Score: {pred['score']:.1f}/100 (uncalibrated, not a probability)")
+    dq = report.get("data_quality", {})
+    if dq:
+        nse_status = "🟢 Live Enriched" if dq.get("nse_enriched") else "⚪ Standard Feed"
+        res_status = "🟢 Available" if dq.get("has_results") else "⚪ N/A"
+        print(f"    Data Quality  : NSE Enrichment: {nse_status} | Financials: {res_status}")
     print("")
     print(f"    ⚡ {st['horizon'].upper()}:")
     print(f"       🎯 Target Price : ₹{st['target']:,.2f}  ({st['target_pct']:+.2f}%)")
@@ -2035,7 +2228,7 @@ def scan_stocks(watchlist: List[str], title: str = "NIFTY Stocks", top_n: int = 
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         results = [r for r in executor.map(analyze_single, watchlist) if r is not None]
 
     results.sort(key=lambda x: x["prediction"]["score"], reverse=True)
@@ -2045,7 +2238,7 @@ def scan_stocks(watchlist: List[str], title: str = "NIFTY Stocks", top_n: int = 
         sym = r["symbol"]
         ltp = f"₹{r['ltp']:,.1f}"
         chg = f"{r['p_change']:+.2f}%"
-        deliv = f"{r['delivery_pct']:.1f}%"
+        deliv = f"{r['delivery_pct']:.1f}%" if r.get("delivery_pct", 0) > 0 else "N/A"
 
         fno = r.get("fno", {})
         buildup_raw = fno.get("buildup", "CASH")

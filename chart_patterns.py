@@ -1,508 +1,455 @@
 """
-Chart Pattern Recognition & Price Action Analysis Engine for NIFTY 50
-Detects real-time candlestick patterns, classical formations (Double Top/Bottom, Head & Shoulders),
-market structure (Higher Highs / Lower Lows), Day Range Breakouts, VWAP, and EMAs.
+Chart Pattern Recognition & Price Action Analysis Engine for NIFTY 50  -- v2
+
+Fixes vs v1
+-----------
+* Patterns / formations are detected on CLOSED candles only (no repainting on the forming candle).
+* Candle cache is kept PER INTERVAL (v1 could return 15m candles as 5m after a failed fetch).
+* Stale data is detected (last candle too old) and reported instead of silently used.
+* Fetches 5 days so EMA/RSI/ATR are meaningful early in the day; VWAP, day high/low and
+  patterns use TODAY's session only.
+* VWAP is volume-weighted only when the feed has volume. Yahoo's ^NSEI index has none, so it
+  falls back to an equal-weighted anchor and says so ("vwap_is_volume_weighted": False).
+* Adds ATR(14). EMA / VWAP get a neutral band (no more forced bullish/bearish vote).
+* Morning/Evening Star range bug fixed; Hammer/Shooting Star need a preceding move;
+  Three Soldiers/Crows need real bodies and proper opens.
+* Double Top/Bottom use an ATR-based tolerance, need depth + separation + recency.
+* Head & Shoulders (and inverse) are now actually implemented, with a neckline break.
+* Day-high breakout means a CLOSE above all prior session highs (not "near the high").
+* 15m macro trend can be NEUTRAL.
+
+Pass allow_stale=True (e.g. for --demo / market closed) to analyze old data anyway.
 """
 
 import time
 import requests
 from typing import Dict, Any, List, Optional, Tuple
 
+INTERVAL_SEC = {"1m": 60, "5m": 300, "15m": 900}
+IST_OFFSET = 19800  # seconds
+
+
+def _day(ts: float) -> int:
+    """IST calendar day number for an epoch timestamp."""
+    return int((ts + IST_OFFSET) // 86400)
+
+
+def _atr(candles: List[Dict[str, Any]], period: int = 14) -> float:
+    if len(candles) < 2:
+        return 0.0
+    trs = []
+    for p, c in zip(candles[:-1], candles[1:]):
+        trs.append(max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"])))
+    tail = trs[-period:]
+    return sum(tail) / len(tail) if tail else 0.0
+
 
 class ChartPatternAnalyzer:
-    def __init__(self, symbol: str = "^NSEI"):
+    MAX_CACHE_AGE_SEC = 600
+
+    def __init__(self, symbol: str = "^NSEI", allow_stale: bool = False):
         self.symbol = symbol
+        self.allow_stale = allow_stale
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "Accept": "application/json"
+            "Accept": "application/json",
         })
-        self.last_candles: List[Dict[str, float]] = []
+        self._candle_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
         self._mtf_cache: Optional[Dict[str, Any]] = None
         self._mtf_cache_time: float = 0.0
 
+    # ------------------------------------------------------------------
+    # Data
+    # ------------------------------------------------------------------
     def fetch_intraday_candles(self, interval: str = "5m") -> List[Dict[str, Any]]:
-        """
-        Fetches live intraday OHLCV candles from Yahoo Finance for NIFTY 50 (^NSEI).
-        Interval can be '1m' or '5m'.
-        """
+        """Fetches 5 days of OHLCV candles from Yahoo (includes the still-forming candle).
+        Falls back to a per-interval cache for up to MAX_CACHE_AGE_SEC."""
         try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{self.symbol}?interval={interval}&range=1d"
+            url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{self.symbol}"
+                   f"?interval={interval}&range=5d")
             res = self.session.get(url, timeout=6)
-            if res.status_code != 200:
-                return self.last_candles
-
-            data = res.json()
-            result = data.get("chart", {}).get("result", [])
-            if not result:
-                return self.last_candles
-
-            chart = result[0]
-            timestamps = chart.get("timestamp", [])
-            quotes = chart.get("indicators", {}).get("quote", [{}])[0]
-            opens = quotes.get("open", [])
-            highs = quotes.get("high", [])
-            lows = quotes.get("low", [])
-            closes = quotes.get("close", [])
-            volumes = quotes.get("volume", [])
-
-            candles = []
-            for i in range(len(timestamps)):
-                o, h, l, c = opens[i], highs[i], lows[i], closes[i]
-                v = volumes[i] if volumes and i < len(volumes) and volumes[i] is not None else 0
-                if o is not None and h is not None and l is not None and c is not None:
-                    candles.append({
-                        "timestamp": timestamps[i],
-                        "open": float(o),
-                        "high": float(h),
-                        "low": float(l),
-                        "close": float(c),
-                        "volume": int(v)
-                    })
-
-            if candles:
-                self.last_candles = candles
-            return candles
+            if res.status_code == 200:
+                result = res.json().get("chart", {}).get("result", [])
+                if result:
+                    chart = result[0]
+                    timestamps = chart.get("timestamp", []) or []
+                    q = chart.get("indicators", {}).get("quote", [{}])[0]
+                    opens, highs, lows = q.get("open", []), q.get("high", []), q.get("low", [])
+                    closes, volumes = q.get("close", []), q.get("volume", [])
+                    candles = []
+                    for i in range(len(timestamps)):
+                        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+                        v = volumes[i] if volumes and i < len(volumes) and volumes[i] is not None else 0
+                        if None not in (o, h, l, c):
+                            candles.append({"timestamp": timestamps[i], "open": float(o), "high": float(h),
+                                            "low": float(l), "close": float(c), "volume": int(v)})
+                    if candles:
+                        self._candle_cache[interval] = (time.time(), candles)
+                        return candles
         except Exception:
-            return self.last_candles
+            pass
+        cached = self._candle_cache.get(interval)
+        if cached and time.time() - cached[0] <= self.MAX_CACHE_AGE_SEC:
+            return cached[1]
+        return []
 
+    # ------------------------------------------------------------------
+    # Candlestick patterns (pass CLOSED candles only)
+    # ------------------------------------------------------------------
     @staticmethod
     def detect_candlestick_patterns(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Detects single and multi-candlestick patterns on the latest candles.
-        """
-        patterns = []
+        patterns: List[Dict[str, Any]] = []
         if len(candles) < 3:
             return patterns
 
-        c = candles[-1]     # Current candle
-        p = candles[-2]     # Previous candle
-        pp = candles[-3]    # Two candles ago
-
+        c, p, pp = candles[-1], candles[-2], candles[-3]
         o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
         body = abs(cl - o)
         rng = max(0.01, h - l)
         upper_wick = h - max(o, cl)
         lower_wick = min(o, cl) - l
-        is_green = cl >= o
-        is_red = cl < o
+        is_green, is_red = cl >= o, cl < o
 
         p_o, p_h, p_l, p_cl = p["open"], p["high"], p["low"], p["close"]
         p_body = abs(p_cl - p_o)
-        p_is_green = p_cl >= p_o
-        p_is_red = p_cl < p_o
+        p_rng = max(0.01, p_h - p_l)
+        p_is_green, p_is_red = p_cl >= p_o, p_cl < p_o
+        pp_body = abs(pp["close"] - pp["open"])
 
-        # 1. Hammer / Bullish Pin Bar
-        if lower_wick >= 2.0 * body and upper_wick <= 0.25 * rng and lower_wick >= 0.55 * rng:
-            patterns.append({
-                "name": "Hammer (Bullish Pin Bar)",
-                "type": "BULLISH",
-                "significance": "High",
-                "desc": "Strong rejection of lower prices; buyers stepping in with aggressive demand."
-            })
+        downtrend = len(candles) >= 4 and candles[-4]["close"] > p_cl
+        uptrend = len(candles) >= 4 and candles[-4]["close"] < p_cl
 
-        # 2. Shooting Star / Bearish Pin Bar
-        if upper_wick >= 2.0 * body and lower_wick <= 0.25 * rng and upper_wick >= 0.55 * rng:
-            patterns.append({
-                "name": "Shooting Star (Bearish Pin Bar)",
-                "type": "BEARISH",
-                "significance": "High",
-                "desc": "Strong rejection of higher prices; sellers defending upper levels."
-            })
-
-        # 3. Bullish Engulfing
+        if downtrend and lower_wick >= 2.0 * body and upper_wick <= 0.25 * rng and lower_wick >= 0.55 * rng:
+            patterns.append({"name": "Hammer (Bullish Pin Bar)", "type": "BULLISH", "significance": "High",
+                             "desc": "Rejection of lower prices after a decline; buyers stepping in."})
+        if uptrend and upper_wick >= 2.0 * body and lower_wick <= 0.25 * rng and upper_wick >= 0.55 * rng:
+            patterns.append({"name": "Shooting Star (Bearish Pin Bar)", "type": "BEARISH", "significance": "High",
+                             "desc": "Rejection of higher prices after a rise; sellers defending the top."})
         if p_is_red and is_green and cl > p_o and o < p_cl and body > p_body * 1.1:
-            patterns.append({
-                "name": "Bullish Engulfing",
-                "type": "BULLISH",
-                "significance": "High",
-                "desc": "Green candle completely engulfs prior red body; bullish momentum takeover."
-            })
-
-        # 4. Bearish Engulfing
+            patterns.append({"name": "Bullish Engulfing", "type": "BULLISH", "significance": "High",
+                             "desc": "Green candle engulfs prior red body."})
         if p_is_green and is_red and cl < p_o and o > p_cl and body > p_body * 1.1:
-            patterns.append({
-                "name": "Bearish Engulfing",
-                "type": "BEARISH",
-                "significance": "High",
-                "desc": "Red candle completely engulfs prior green body; bearish supply dump."
-            })
-
-        # 5. Morning Star (3-candle bullish reversal)
-        pp_is_red = pp["close"] < pp["open"]
-        if pp_is_red and p_body <= rng * 0.4 and is_green and cl > (pp["open"] + pp["close"]) / 2:
-            patterns.append({
-                "name": "Morning Star",
-                "type": "BULLISH",
-                "significance": "Very High",
-                "desc": "3-candle bullish reversal pattern: sellers exhausted, sharp buyer recovery."
-            })
-
-        # 6. Evening Star (3-candle bearish reversal)
-        pp_is_green = pp["close"] >= pp["open"]
-        if pp_is_green and p_body <= rng * 0.4 and is_red and cl < (pp["open"] + pp["close"]) / 2:
-            patterns.append({
-                "name": "Evening Star",
-                "type": "BEARISH",
-                "significance": "Very High",
-                "desc": "3-candle bearish reversal pattern: buyers exhausted, supply wave incoming."
-            })
-
-        # 7. Inside Bar (Compression / Coiling)
+            patterns.append({"name": "Bearish Engulfing", "type": "BEARISH", "significance": "High",
+                             "desc": "Red candle engulfs prior green body."})
+        # Morning / Evening Star: compare the MIDDLE candle to ITS OWN range and the first body
+        if (pp["close"] < pp["open"] and pp_body > 0 and p_body <= p_rng * 0.4 and p_body < pp_body * 0.6
+                and is_green and cl > (pp["open"] + pp["close"]) / 2):
+            patterns.append({"name": "Morning Star", "type": "BULLISH", "significance": "Very High",
+                             "desc": "3-candle bullish reversal: sellers exhausted, buyers recover."})
+        if (pp["close"] >= pp["open"] and pp_body > 0 and p_body <= p_rng * 0.4 and p_body < pp_body * 0.6
+                and is_red and cl < (pp["open"] + pp["close"]) / 2):
+            patterns.append({"name": "Evening Star", "type": "BEARISH", "significance": "Very High",
+                             "desc": "3-candle bearish reversal: buyers exhausted, supply arrives."})
         if h <= p_h and l >= p_l:
-            patterns.append({
-                "name": "Inside Bar (Harami Coiling)",
-                "type": "NEUTRAL",
-                "significance": "Medium",
-                "desc": "Price compressed completely within prior range; breakout imminent."
-            })
-
-        # 8. Doji (Indecision)
+            patterns.append({"name": "Inside Bar (Harami Coiling)", "type": "NEUTRAL", "significance": "Medium",
+                             "desc": "Price compressed inside prior range; breakout pending."})
         if body <= rng * 0.12 and not patterns:
-            patterns.append({
-                "name": "Doji (Market Indecision)",
-                "type": "NEUTRAL",
-                "significance": "Medium",
-                "desc": "Equal equilibrium between bulls and bears; waiting for direction."
-            })
+            patterns.append({"name": "Doji (Market Indecision)", "type": "NEUTRAL", "significance": "Medium",
+                             "desc": "Bulls and bears balanced."})
 
-        # 9. Three Consecutive Candles Trend
-        if len(candles) >= 3:
-            if candles[-1]["close"] > candles[-2]["close"] > candles[-3]["close"] and is_green and p_is_green:
-                patterns.append({
-                    "name": "Three White Soldiers (Strong Bullish Wave)",
-                    "type": "BULLISH",
-                    "significance": "High",
-                    "desc": "3 consecutive higher green closes; robust upward impulse."
-                })
-            elif candles[-1]["close"] < candles[-2]["close"] < candles[-3]["close"] and is_red and p_is_red:
-                patterns.append({
-                    "name": "Three Black Crows (Strong Bearish Wave)",
-                    "type": "BEARISH",
-                    "significance": "High",
-                    "desc": "3 consecutive lower red closes; steady downward distribution."
-                })
+        def strong_green(x):
+            return x["close"] > x["open"] and (x["close"] - x["open"]) >= 0.5 * max(0.01, x["high"] - x["low"])
 
+        def strong_red(x):
+            return x["close"] < x["open"] and (x["open"] - x["close"]) >= 0.5 * max(0.01, x["high"] - x["low"])
+
+        if (strong_green(c) and strong_green(p) and strong_green(pp) and cl > p_cl > pp["close"]
+                and pp["open"] <= p_o <= pp["close"] and p_o <= o <= p_cl):
+            patterns.append({"name": "Three White Soldiers (Strong Bullish Wave)", "type": "BULLISH",
+                             "significance": "High", "desc": "3 strong green candles, each opening inside the last body."})
+        elif (strong_red(c) and strong_red(p) and strong_red(pp) and cl < p_cl < pp["close"]
+              and pp["close"] <= p_o <= pp["open"] and p_cl <= o <= p_o):
+            patterns.append({"name": "Three Black Crows (Strong Bearish Wave)", "type": "BEARISH",
+                             "significance": "High", "desc": "3 strong red candles, each opening inside the last body."})
         return patterns
 
+    # ------------------------------------------------------------------
+    # Formations (pass TODAY's CLOSED candles)
+    # ------------------------------------------------------------------
     @staticmethod
-    def detect_chart_formations(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Detects classical multi-candle chart formations:
-        - Double Bottom (W Pattern)
-        - Double Top (M Pattern)
-        - Head & Shoulders
-        - Range Breakout / Breakdown
-        """
-        formations = []
+    def _swings(highs: List[float], lows: List[float]):
+        sh, sl = [], []
+        for i in range(2, len(highs) - 2):
+            if highs[i] > max(highs[i - 2:i]) and highs[i] > max(highs[i + 1:i + 3]):
+                sh.append((i, highs[i]))
+            if lows[i] < min(lows[i - 2:i]) and lows[i] < min(lows[i + 1:i + 3]):
+                sl.append((i, lows[i]))
+        return sh, sl
+
+    @staticmethod
+    def detect_chart_formations(candles: List[Dict[str, Any]], atr: Optional[float] = None) -> List[Dict[str, Any]]:
+        formations: List[Dict[str, Any]] = []
         if len(candles) < 10:
             return formations
 
         highs = [c["high"] for c in candles]
         lows = [c["low"] for c in candles]
         closes = [c["close"] for c in candles]
-        curr_price = closes[-1]
-        day_high = max(highs)
-        day_low = min(lows)
+        n = len(candles)
+        price = closes[-1]
+        if atr is None or atr <= 0:
+            atr = _atr(candles) or price * 0.001
+        tol = max(0.35 * atr, 0.0005 * price)
+        RECENT = 15  # last pivot must be within this many candles
 
-        # 1. Day High Breakout (ORB)
-        if curr_price >= day_high - 3.0:
-            formations.append({
-                "name": "Day High Breakout (ORB)",
-                "type": "BULLISH",
-                "level": round(day_high, 2),
-                "desc": f"NIFTY trading right at Day High ({day_high:.2f}); strong momentum breakout potential."
-            })
+        # 1. Breakout / breakdown: a CLOSE beyond every prior session high/low
+        prior_high, prior_low = max(highs[:-1]), min(lows[:-1])
+        if price > prior_high:
+            formations.append({"name": "Day High Breakout", "type": "BULLISH", "level": round(prior_high, 2),
+                               "desc": f"Closed above all prior session highs ({prior_high:.2f})."})
+        elif price < prior_low:
+            formations.append({"name": "Day Low Breakdown", "type": "BEARISH", "level": round(prior_low, 2),
+                               "desc": f"Closed below all prior session lows ({prior_low:.2f})."})
 
-        # 2. Day Low Breakdown
-        if curr_price <= day_low + 3.0:
-            formations.append({
-                "name": "Day Low Breakdown",
-                "type": "BEARISH",
-                "level": round(day_low, 2),
-                "desc": f"NIFTY cracking Day Low ({day_low:.2f}); aggressive breakdown under pressure."
-            })
+        sh, sl = ChartPatternAnalyzer._swings(highs, lows)
 
-        # Find Swing Pivots (local minima and maxima)
-        swing_highs: List[Tuple[int, float]] = []
-        swing_lows: List[Tuple[int, float]] = []
-
-        for i in range(2, len(candles) - 2):
-            if highs[i] > highs[i - 1] and highs[i] > highs[i - 2] and highs[i] > highs[i + 1] and highs[i] > highs[i + 2]:
-                swing_highs.append((i, highs[i]))
-            if lows[i] < lows[i - 1] and lows[i] < lows[i - 2] and lows[i] < lows[i + 1] and lows[i] < lows[i + 2]:
-                swing_lows.append((i, lows[i]))
-
-        # 3. Double Bottom (W Formation)
-        if len(swing_lows) >= 2:
-            l1 = swing_lows[-2][1]
-            l2 = swing_lows[-1][1]
-            # Lows within 0.15% of each other
-            if abs(l1 - l2) / l1 <= 0.0020 and curr_price >= l2:
-                formations.append({
-                    "name": "Double Bottom (W Pattern)",
-                    "type": "BULLISH",
-                    "level": round((l1 + l2) / 2, 2),
-                    "desc": f"Classic 'W' double bottom support formed around {((l1+l2)/2):.1f}; bullish base established."
-                })
-
-        # 4. Double Top (M Formation)
-        if len(swing_highs) >= 2:
-            h1 = swing_highs[-2][1]
-            h2 = swing_highs[-1][1]
-            # Highs within 0.15% of each other
-            if abs(h1 - h2) / h1 <= 0.0020 and curr_price <= h2:
-                formations.append({
-                    "name": "Double Top (M Pattern)",
-                    "type": "BEARISH",
-                    "level": round((h1 + h2) / 2, 2),
-                    "desc": f"Classic 'M' double top resistance formed around {((h1+h2)/2):.1f}; distribution ceiling."
-                })
-
-        # 5. Market Structure (HH/HL vs LH/LL)
-        if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-            if swing_highs[-1][1] > swing_highs[-2][1] and swing_lows[-1][1] > swing_lows[-2][1]:
-                formations.append({
-                    "name": "Ascending Structure (Higher Highs & Higher Lows)",
-                    "type": "BULLISH",
-                    "level": round(swing_lows[-1][1], 2),
-                    "desc": "Price action maintaining clear intraday uptrend staircase."
-                })
-            elif swing_highs[-1][1] < swing_highs[-2][1] and swing_lows[-1][1] < swing_lows[-2][1]:
-                formations.append({
-                    "name": "Descending Structure (Lower Highs & Lower Lows)",
-                    "type": "BEARISH",
-                    "level": round(swing_highs[-1][1], 2),
-                    "desc": "Price action locked in downward distribution staircase."
-                })
-
+        # 2. Double Bottom
+        if len(sl) >= 2:
+            (i1, l1), (i2, l2) = sl[-2], sl[-1]
+            peak = max(highs[i1:i2 + 1])
+            if (n - 1 - i2 <= RECENT and i2 - i1 >= 4 and abs(l1 - l2) <= tol
+                    and (peak - max(l1, l2)) >= 1.0 * atr and price >= l2):
+                formations.append({"name": "Double Bottom (W Pattern)", "type": "BULLISH",
+                                   "level": round((l1 + l2) / 2, 2),
+                                   "desc": f"W base around {(l1 + l2) / 2:.1f} with a rally between the lows."})
+        # 3. Double Top
+        if len(sh) >= 2:
+            (i1, h1), (i2, h2) = sh[-2], sh[-1]
+            trough = min(lows[i1:i2 + 1])
+            if (n - 1 - i2 <= RECENT and i2 - i1 >= 4 and abs(h1 - h2) <= tol
+                    and (min(h1, h2) - trough) >= 1.0 * atr and price <= h2):
+                formations.append({"name": "Double Top (M Pattern)", "type": "BEARISH",
+                                   "level": round((h1 + h2) / 2, 2),
+                                   "desc": f"M ceiling around {(h1 + h2) / 2:.1f} with a dip between the highs."})
+        # 4. Head & Shoulders (needs neckline break)
+        if len(sh) >= 3:
+            (i1, h1), (i2, h2), (i3, h3) = sh[-3:]
+            neck = min(min(lows[i1:i2 + 1]), min(lows[i2:i3 + 1]))
+            if (n - 1 - i3 <= RECENT and h2 > max(h1, h3) + 0.5 * atr and abs(h1 - h3) <= 1.0 * atr
+                    and price < neck):
+                formations.append({"name": "Head & Shoulders", "type": "BEARISH", "level": round(neck, 2),
+                                   "desc": f"Neckline {neck:.1f} broken after a head-and-shoulders top."})
+        if len(sl) >= 3:
+            (i1, l1), (i2, l2), (i3, l3) = sl[-3:]
+            neck = max(max(highs[i1:i2 + 1]), max(highs[i2:i3 + 1]))
+            if (n - 1 - i3 <= RECENT and l2 < min(l1, l3) - 0.5 * atr and abs(l1 - l3) <= 1.0 * atr
+                    and price > neck):
+                formations.append({"name": "Inverse Head & Shoulders", "type": "BULLISH", "level": round(neck, 2),
+                                   "desc": f"Neckline {neck:.1f} broken after an inverse head-and-shoulders."})
+        # 5. Market structure
+        if len(sh) >= 2 and len(sl) >= 2:
+            if sh[-1][1] > sh[-2][1] and sl[-1][1] > sl[-2][1]:
+                formations.append({"name": "Ascending Structure (Higher Highs & Higher Lows)", "type": "BULLISH",
+                                   "level": round(sl[-1][1], 2), "desc": "Intraday uptrend staircase."})
+            elif sh[-1][1] < sh[-2][1] and sl[-1][1] < sl[-2][1]:
+                formations.append({"name": "Descending Structure (Lower Highs & Lower Lows)", "type": "BEARISH",
+                                   "level": round(sh[-1][1], 2), "desc": "Intraday downtrend staircase."})
         return formations
 
+    # ------------------------------------------------------------------
+    # Indicators
+    # ------------------------------------------------------------------
     @staticmethod
-    def calculate_technical_indicators(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Computes EMA(9), EMA(21), VWAP, and RSI(14) on candle series.
-        """
+    def calculate_technical_indicators(
+        candles: List[Dict[str, Any]],
+        session_candles: Optional[List[Dict[str, Any]]] = None,
+        live_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """EMA/RSI/ATR use `candles` (multi-day, closed). VWAP uses `session_candles` (today).
+        vwap_bias compares `live_price` (or last close) with VWAP."""
         closes = [c["close"] for c in candles]
         if not closes:
-            return {"ema9": 0.0, "ema21": 0.0, "vwap": 0.0, "rsi": 50.0}
+            return {}
+        session = session_candles if session_candles else candles
 
-        # EMA Calculation
         def get_ema(data: List[float], period: int) -> float:
             if len(data) < period:
                 return sum(data) / len(data)
             k = 2.0 / (period + 1)
             val = sum(data[:period]) / period
-            for p in data[period:]:
-                val = p * k + val * (1.0 - k)
+            for x in data[period:]:
+                val = x * k + val * (1.0 - k)
             return val
 
-        ema9 = get_ema(closes, 9)
-        ema21 = get_ema(closes, 21)
+        ema9, ema21 = get_ema(closes, 9), get_ema(closes, 21)
+        atr = _atr(candles)
 
-        # VWAP Calculation
-        cum_vp = 0.0
-        cum_vol = 0.0
-        for c in candles:
-            typical_price = (c["high"] + c["low"] + c["close"]) / 3.0
-            v = c.get("volume", 0) or 1
-            cum_vp += typical_price * v
-            cum_vol += v
-        vwap = (cum_vp / cum_vol) if cum_vol > 0 else closes[-1]
+        total_vol = sum(c.get("volume", 0) or 0 for c in session)
+        vol_weighted = total_vol > 0
+        cum_vp = cum_v = 0.0
+        for c in session:
+            tp = (c["high"] + c["low"] + c["close"]) / 3.0
+            v = (c.get("volume", 0) or 0) if vol_weighted else 1
+            cum_vp += tp * v
+            cum_v += v
+        price = live_price if live_price else closes[-1]
+        vwap = cum_vp / cum_v if cum_v > 0 else price
 
-        # RSI(14)
         rsi = 50.0
         if len(closes) >= 15:
             gains, losses = [], []
             for i in range(1, len(closes)):
-                diff = closes[i] - closes[i - 1]
-                if diff > 0:
-                    gains.append(diff)
-                    losses.append(0.0)
-                else:
-                    gains.append(0.0)
-                    losses.append(abs(diff))
-
+                d = closes[i] - closes[i - 1]
+                gains.append(max(d, 0.0))
+                losses.append(max(-d, 0.0))
             period = 14
             avg_g = sum(gains[:period]) / period
             avg_l = sum(losses[:period]) / period
             for i in range(period, len(gains)):
                 avg_g = (avg_g * (period - 1) + gains[i]) / period
                 avg_l = (avg_l * (period - 1) + losses[i]) / period
+            rsi = 100.0 if avg_l == 0 else round(100.0 - 100.0 / (1.0 + avg_g / avg_l), 2)
 
-            if avg_l == 0:
-                rsi = 100.0
-            else:
-                rs = avg_g / avg_l
-                rsi = round(100.0 - (100.0 / (1.0 + rs)), 2)
+        band = 0.05 * atr
+        if ema9 - ema21 > band:
+            ema_trend = "BULLISH"
+        elif ema21 - ema9 > band:
+            ema_trend = "BEARISH"
+        else:
+            ema_trend = "NEUTRAL"
+
+        vband = 0.10 * atr
+        if price - vwap > vband:
+            vwap_bias = "ABOVE_VWAP (Bullish)"
+        elif vwap - price > vband:
+            vwap_bias = "BELOW_VWAP (Bearish)"
+        else:
+            vwap_bias = "NEAR_VWAP (Neutral)"
 
         return {
-            "ema9": round(ema9, 2),
-            "ema21": round(ema21, 2),
-            "vwap": round(vwap, 2),
-            "rsi": rsi,
-            "ema_trend": "BULLISH" if ema9 > ema21 else "BEARISH",
-            "vwap_bias": "ABOVE_VWAP (Bullish)" if closes[-1] >= vwap else "BELOW_VWAP (Bearish)"
+            "ema9": round(ema9, 2), "ema21": round(ema21, 2), "vwap": round(vwap, 2),
+            "vwap_is_volume_weighted": vol_weighted, "rsi": rsi, "atr": round(atr, 2),
+            "ema_trend": ema_trend, "vwap_bias": vwap_bias,
+        }
+
+    # ------------------------------------------------------------------
+    def _empty(self, interval: str, status: str) -> Dict[str, Any]:
+        return {
+            "interval": interval, "status": status, "is_stale": True,
+            "candlestick_patterns": [], "chart_formations": [], "indicators": {},
+            "sentiment": "NEUTRAL", "confidence": 50, "summary": status,
         }
 
     def analyze_patterns(self, interval: str = "5m") -> Dict[str, Any]:
-        """
-        Comprehensive pattern recognition combining Candlestick, Chart Formations,
-        and Indicators into a synthesized market action report.
-        """
-        candles = self.fetch_intraday_candles(interval=interval)
-        if not candles:
-            return {
-                "status": "No candle data available",
-                "patterns": [],
-                "formations": [],
-                "indicators": {},
-                "sentiment": "NEUTRAL",
-                "confidence": 50,
-                "summary": "Awaiting candle data"
-            }
+        all_c = self.fetch_intraday_candles(interval=interval)
+        if not all_c:
+            return self._empty(interval, "No candle data available")
 
-        candlestick_patterns = self.detect_candlestick_patterns(candles)
-        chart_formations = self.detect_chart_formations(candles)
-        indicators = self.calculate_technical_indicators(candles)
+        step = INTERVAL_SEC.get(interval, 300)
+        now = time.time()
+        age = now - all_c[-1]["timestamp"]
+        stale = age > step * 3 + 60
+        if stale and not self.allow_stale:
+            return self._empty(interval, f"Stale candles ({int(age)}s old): market closed or feed delayed")
 
-        # Scoring Sentiment
-        bullish_votes = 0
-        bearish_votes = 0
+        # closed = fully formed candles. If data is stale/old, everything is closed.
+        closed_all = [c for c in all_c if c["timestamp"] + step <= now] or all_c[:-1] or all_c
+        today = _day(all_c[-1]["timestamp"])
+        session_all = [c for c in all_c if _day(c["timestamp"]) == today]
+        session_closed = [c for c in closed_all if _day(c["timestamp"]) == today]
+        live_price = all_c[-1]["close"]
 
+        indicators = self.calculate_technical_indicators(closed_all, session_all, live_price)
+        atr = indicators.get("atr", 0.0)
+        candlestick_patterns = self.detect_candlestick_patterns(session_closed)
+        chart_formations = self.detect_chart_formations(session_closed, atr)
+
+        bull = bear = 0
         for p in candlestick_patterns:
-            if p["type"] == "BULLISH":
-                bullish_votes += 2
-            elif p["type"] == "BEARISH":
-                bearish_votes += 2
-
+            bull += 2 if p["type"] == "BULLISH" else 0
+            bear += 2 if p["type"] == "BEARISH" else 0
         for f in chart_formations:
-            if f["type"] == "BULLISH":
-                bullish_votes += 3
-            elif f["type"] == "BEARISH":
-                bearish_votes += 3
+            bull += 3 if f["type"] == "BULLISH" else 0
+            bear += 3 if f["type"] == "BEARISH" else 0
+        if indicators.get("ema_trend") == "BULLISH":
+            bull += 1
+        elif indicators.get("ema_trend") == "BEARISH":
+            bear += 1
+        if "ABOVE_VWAP" in indicators.get("vwap_bias", ""):
+            bull += 1
+        elif "BELOW_VWAP" in indicators.get("vwap_bias", ""):
+            bear += 1
+        rsi = indicators.get("rsi", 50.0)
+        if rsi > 55:
+            bull += 1
+        elif rsi < 45:
+            bear += 1
 
-        if indicators["ema_trend"] == "BULLISH":
-            bullish_votes += 1
+        total = bull + bear
+        if bull >= bear + 2:
+            sentiment, confidence = "BULLISH PRICE ACTION", min(95, int(bull / max(1, total) * 100))
+        elif bear >= bull + 2:
+            sentiment, confidence = "BEARISH PRICE ACTION", min(95, int(bear / max(1, total) * 100))
         else:
-            bearish_votes += 1
+            sentiment, confidence = "CONSOLIDATION / NEUTRAL", 50
 
-        if "ABOVE_VWAP" in indicators["vwap_bias"]:
-            bullish_votes += 1
-        else:
-            bearish_votes += 1
-
-        if indicators["rsi"] > 55:
-            bullish_votes += 1
-        elif indicators["rsi"] < 45:
-            bearish_votes += 1
-
-        # Synthesize Pattern Sentiment
-        total_votes = bullish_votes + bearish_votes
-        if bullish_votes >= bearish_votes + 2:
-            sentiment = "BULLISH PRICE ACTION"
-            confidence = min(95, int((bullish_votes / max(1, total_votes)) * 100))
-        elif bearish_votes >= bullish_votes + 2:
-            sentiment = "BEARISH PRICE ACTION"
-            confidence = min(95, int((bearish_votes / max(1, total_votes)) * 100))
-        else:
-            sentiment = "CONSOLIDATION / NEUTRAL"
-            confidence = 50
-
-        # Build clean summary string
-        active_labels = [p["name"] for p in candlestick_patterns] + [f["name"] for f in chart_formations]
-        if not active_labels:
-            active_labels = ["Trend Following Range", indicators["vwap_bias"]]
-
-        summary = " | ".join(active_labels[:3])
+        labels = [p["name"] for p in candlestick_patterns] + [f["name"] for f in chart_formations]
+        if not labels:
+            labels = ["Trend Following Range", indicators.get("vwap_bias", "")]
 
         return {
             "interval": interval,
-            "candles_count": len(candles),
-            "current_close": candles[-1]["close"],
-            "day_high": max(c["high"] for c in candles),
-            "day_low": min(c["low"] for c in candles),
+            "candles_count": len(session_closed),
+            "current_close": live_price,
+            "day_high": max(c["high"] for c in session_all),
+            "day_low": min(c["low"] for c in session_all),
             "candlestick_patterns": candlestick_patterns,
             "chart_formations": chart_formations,
             "indicators": indicators,
             "sentiment": sentiment,
             "confidence": confidence,
-            "summary": summary
+            "summary": " | ".join(labels[:3]),
+            "is_stale": stale,
+            "last_candle_age_sec": int(age),
         }
 
+    # ------------------------------------------------------------------
     def analyze_multi_timeframe(self) -> Dict[str, Any]:
-        """
-        Performs Multi-Timeframe Analysis:
-        - 15m: Institutional Macro Trend (Trend Direction & Major Structure)
-        - 5m : Intraday Trigger & Precise Entry Formations
-        Only trades when the higher 15m timeframe confirms the 5m setup!
-        """
+        """15m macro trend + 5m trigger. Cached for 45 s."""
         now = time.time()
         if self._mtf_cache is not None and (now - self._mtf_cache_time) < 45.0:
             return self._mtf_cache
 
-        analysis_5m = self.analyze_patterns(interval="5m")
-        analysis_15m = self.analyze_patterns(interval="15m")
+        a5 = self.analyze_patterns(interval="5m")
+        a15 = self.analyze_patterns(interval="15m")
+        if not a5 or not a5.get("indicators"):
+            return a5 or {}
 
-        if not analysis_5m:
-            return analysis_5m or {}
+        bull15 = bear15 = False
+        if a15 and a15.get("indicators"):
+            ind = a15["indicators"]
+            bp = (ind.get("ema_trend") == "BULLISH") + ("ABOVE_VWAP" in ind.get("vwap_bias", "")) + (ind.get("rsi", 50) >= 55)
+            sp = (ind.get("ema_trend") == "BEARISH") + ("BELOW_VWAP" in ind.get("vwap_bias", "")) + (ind.get("rsi", 50) <= 45)
+            sent = a15.get("sentiment", "")
+            bull15 = "BULLISH" in sent or (bp >= 2 and bp > sp)
+            bear15 = "BEARISH" in sent or (sp >= 2 and sp > bp)
+            if bull15 and bear15:
+                bull15 = bear15 = False
 
-        # 15m Macro Bias
-        is_15m_bullish = False
-        is_15m_bearish = False
-        if analysis_15m:
-            ind15 = analysis_15m.get("indicators", {})
-            ema15 = ind15.get("ema_trend", "")
-            vwap15 = ind15.get("vwap_bias", "")
-            rsi15 = ind15.get("rsi", 50.0)
-            sent15 = analysis_15m.get("sentiment", "")
+        bull5 = "BULLISH" in a5.get("sentiment", "")
+        bear5 = "BEARISH" in a5.get("sentiment", "")
 
-            bull_points = (1 if ema15 == "BULLISH" else 0) + (1 if "ABOVE_VWAP" in vwap15 else 0) + (1 if rsi15 >= 50 else 0)
-            if "BULLISH" in sent15 or bull_points >= 2:
-                is_15m_bullish = True
-            elif "BEARISH" in sent15 or bull_points <= 1:
-                is_15m_bearish = True
-
-        # 5m Trigger Bias
-        is_5m_bullish = "BULLISH" in analysis_5m.get("sentiment", "")
-        is_5m_bearish = "BEARISH" in analysis_5m.get("sentiment", "")
-
-        # MTF Alignment Evaluation
-        if is_15m_bullish and is_5m_bullish:
-            mtf_status = "ALIGNED_BULLISH"
-            mtf_badge = "🟢 MTF CONGRUENT (15m + 5m BULLISH)"
-            mtf_desc = "15m Macro Trend and 5m Price Action both Bullish. High-conviction long setup."
-            alignment_score = +3
-        elif is_15m_bearish and is_5m_bearish:
-            mtf_status = "ALIGNED_BEARISH"
-            mtf_badge = "🔴 MTF CONGRUENT (15m + 5m BEARISH)"
-            mtf_desc = "15m Macro Trend and 5m Price Action both Bearish. High-conviction short setup."
-            alignment_score = -3
-        elif is_15m_bullish and is_5m_bearish:
-            mtf_status = "BULLISH_PULLBACK"
-            mtf_badge = "🟡 15m BULLISH (5m Pullback / Dip)"
-            mtf_desc = "15m Trend is Bullish; 5m is in a minor pullback. Wait for 5m reversal hammer."
-            alignment_score = 0
-        elif is_15m_bearish and is_5m_bullish:
-            mtf_status = "BEARISH_BOUNCE"
-            mtf_badge = "🟡 15m BEARISH (5m Bounce Trap)"
-            mtf_desc = "15m Trend is Bearish; 5m is bouncing. Caution: high risk of bull trap."
-            alignment_score = 0
+        if bull15 and bull5:
+            st, badge, desc, score = ("ALIGNED_BULLISH", "🟢 MTF CONGRUENT (15m + 5m BULLISH)",
+                                      "15m trend and 5m price action both bullish.", 3)
+        elif bear15 and bear5:
+            st, badge, desc, score = ("ALIGNED_BEARISH", "🔴 MTF CONGRUENT (15m + 5m BEARISH)",
+                                      "15m trend and 5m price action both bearish.", -3)
+        elif bull15 and bear5:
+            st, badge, desc, score = ("BULLISH_PULLBACK", "🟡 15m BULLISH (5m Pullback / Dip)",
+                                      "15m bullish; 5m in a pullback. Wait for a 5m reversal.", 0)
+        elif bear15 and bull5:
+            st, badge, desc, score = ("BEARISH_BOUNCE", "🟡 15m BEARISH (5m Bounce Trap)",
+                                      "15m bearish; 5m bouncing. Bull-trap risk.", 0)
         else:
-            mtf_status = "NEUTRAL"
-            mtf_badge = "⚪ MTF BALANCED"
-            mtf_desc = "Timeframes consolidating in equilibrium."
-            alignment_score = 0
+            st, badge, desc, score = ("NEUTRAL", "⚪ MTF BALANCED", "Timeframes in equilibrium.", 0)
 
-        # Return backward-compatible structure with MTF intelligence
-        result = dict(analysis_5m)
+        result = dict(a5)
         result["mtf"] = {
-            "status": mtf_status,
-            "badge": mtf_badge,
-            "desc": mtf_desc,
-            "alignment_score": alignment_score,
-            "macro_15m_sentiment": analysis_15m.get("sentiment", "NEUTRAL") if analysis_15m else "NEUTRAL",
-            "macro_15m_vwap": analysis_15m.get("indicators", {}).get("vwap", 0.0) if analysis_15m else 0.0
+            "status": st, "badge": badge, "desc": desc, "alignment_score": score,
+            "macro_15m_sentiment": a15.get("sentiment", "NEUTRAL") if a15 else "NEUTRAL",
+            "macro_15m_vwap": (a15.get("indicators", {}) or {}).get("vwap", 0.0) if a15 else 0.0,
         }
         self._mtf_cache = result
         self._mtf_cache_time = time.time()
