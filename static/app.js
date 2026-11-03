@@ -5,7 +5,7 @@
  */
 
 // Application State
-let currentTab = 'news';
+let currentTab = 'options';
 let currentNewsSource = 'all';
 let currentNewsCategory = 'all';
 let currentNewsSearch = '';
@@ -49,7 +49,7 @@ let previousStockLtp = {};
 document.addEventListener('DOMContentLoaded', () => {
   initClock();
   initPopularSectors();
-  fetchLiveNews();
+  fetchLiveOptions();
   checkBrokerStatus();
   loadStockTrackerData(false);
   startTimers();
@@ -735,9 +735,9 @@ function renderOptionChainTable(rows, atmStrike) {
           <td class="col-greek ${itmCeClass}" style="color: var(--accent-rose);">${ceTheta}</td>
           <td class="col-greek ${itmCeClass}" style="color: var(--accent-cyan);">${vega}</td>
           <td class="${itmCeClass}">${formatNum(r.ce_oi)}</td>
-          <td class="${ceFlash} ${itmCeClass}" style="font-weight: 700; border-right: 1px solid var(--border-subtle);">${curCe.toFixed(2)}</td>
+          <td class="${ceFlash} ${itmCeClass}" style="font-weight: 800; color: var(--accent-emerald); border-right: 1px solid var(--border-subtle); font-size: 13px;">${curCe.toFixed(2)}</td>
           <td class="col-strike">${isAtm ? '🎯 ' : ''}${stk}</td>
-          <td class="${peFlash} ${itmPeClass}" style="font-weight: 700; border-left: 1px solid var(--border-subtle); text-align: left;">${curPe.toFixed(2)}</td>
+          <td class="${peFlash} ${itmPeClass}" style="font-weight: 800; color: var(--accent-rose); border-left: 1px solid var(--border-subtle); text-align: left; font-size: 13px;">${curPe.toFixed(2)}</td>
           <td class="${itmPeClass}" style="text-align: left;">${formatNum(r.pe_oi)}</td>
           <td class="col-greek ${itmPeClass}" style="text-align: left; color: var(--accent-cyan);">${vega}</td>
           <td class="col-greek ${itmPeClass}" style="text-align: left; color: var(--accent-rose);">${peTheta}</td>
@@ -752,9 +752,9 @@ function renderOptionChainTable(rows, atmStrike) {
       <tr class="${isAtm ? 'row-atm' : ''}">
         <td class="${itmCeClass}">${formatNum(r.ce_oi)}</td>
         <td class="${ceChgClass} ${itmCeClass}">${formatNum(r.ce_chg_oi)}</td>
-        <td class="${ceFlash} ${itmCeClass}" style="font-weight: 700; border-right: 1px solid var(--border-subtle);">${curCe.toFixed(2)}</td>
+        <td class="${ceFlash} ${itmCeClass}" style="font-weight: 800; color: var(--accent-emerald); border-right: 1px solid var(--border-subtle); font-size: 13px;">${curCe.toFixed(2)}</td>
         <td class="col-strike">${isAtm ? '🎯 ' : ''}${stk}</td>
-        <td class="${peFlash} ${itmPeClass}" style="font-weight: 700; border-left: 1px solid var(--border-subtle); text-align: left;">${curPe.toFixed(2)}</td>
+        <td class="${peFlash} ${itmPeClass}" style="font-weight: 800; color: var(--accent-rose); border-left: 1px solid var(--border-subtle); text-align: left; font-size: 13px;">${curPe.toFixed(2)}</td>
         <td class="${peChgClass} ${itmPeClass}" style="text-align: left;">${formatNum(r.pe_chg_oi)}</td>
         <td class="${itmPeClass}" style="text-align: left;">${formatNum(r.pe_oi)}</td>
       </tr>

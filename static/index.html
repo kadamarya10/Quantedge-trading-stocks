@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QuantEdge // NSE Quant, Options & Multi-Source Live News Terminal</title>
-  <link rel="stylesheet" href="/static/style.css?v=3.6">
+  <link rel="stylesheet" href="/static/style.css?v=3.7">
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📈</text></svg>">
   <!-- Official TradingView Widget Script -->
@@ -26,17 +26,17 @@
 
       <!-- Tab Switcher -->
       <nav class="tab-navigation">
-        <button class="nav-tab-btn active" id="tab-btn-news" onclick="switchTab('news')">
-          <span>📰</span> Live News & Filings
-          <span class="badge-count" id="news-count-badge">Multi-Source</span>
-        </button>
-        <button class="nav-tab-btn" id="tab-btn-options" onclick="switchTab('options')">
-          <span>⚡</span> Option Trading
+        <button class="nav-tab-btn active" id="tab-btn-options" onclick="switchTab('options')">
+          <span>⚡</span> NIFTY Options
           <span class="badge-count" id="options-signal-badge">NIFTY</span>
         </button>
         <button class="nav-tab-btn" id="tab-btn-stocks" onclick="switchTab('stocks')">
           <span>📊</span> Stocks & Predictions
           <span class="badge-count" id="stocks-badge">Active Catalysts</span>
+        </button>
+        <button class="nav-tab-btn" id="tab-btn-news" onclick="switchTab('news')">
+          <span>📰</span> Live News & Filings
+          <span class="badge-count" id="news-count-badge">Multi-Source</span>
         </button>
       </nav>
 
@@ -59,7 +59,7 @@
     <!-- ========================================================
          TAB 1: MULTI-SOURCE FINANCIAL NEWS & OFFICIAL FILINGS
          ======================================================== -->
-    <main id="panel-news" class="tab-content-panel active">
+    <main id="panel-news" class="tab-content-panel">
       <div class="news-header-banner">
         <div class="news-banner-info">
           <h2>Verified Multi-Source Financial News & Announcements</h2>
@@ -164,7 +164,7 @@
     <!-- ========================================================
          TAB 2: OPTION TRADING (NIFTY Live OI, Greeks & Algo)
          ======================================================== -->
-    <main id="panel-options" class="tab-content-panel">
+    <main id="panel-options" class="tab-content-panel active">
       <!-- Top Metrics Ribbon -->
       <div class="options-summary-ribbon">
         <div class="metric-box">
@@ -1672,7 +1672,7 @@
       style="position: fixed; top: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; max-width: 380px; pointer-events: none;">
     </div>
 
-    <script src="/static/app.js?v=3.7"></script>
+    <script src="/static/app.js?v=3.8"></script>
 </body>
 
 </html>

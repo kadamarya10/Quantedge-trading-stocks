@@ -851,14 +851,20 @@ body {
 }
 
 .option-chain-table tr.row-atm td {
-  background: rgba(99, 102, 241, 0.12);
+  background: rgba(99, 102, 241, 0.18) !important;
   font-weight: 700;
+  border-top: 2px solid rgba(99, 102, 241, 0.6) !important;
+  border-bottom: 2px solid rgba(99, 102, 241, 0.6) !important;
 }
 
 .option-chain-table tr.row-atm td.col-strike {
-  color: var(--accent-cyan);
-  border-left: 2px solid var(--accent-cyan);
-  border-right: 2px solid var(--accent-cyan);
+  color: #fbbf24 !important;
+  font-size: 14px;
+  font-weight: 800;
+  background: rgba(49, 46, 129, 0.85) !important;
+  border-left: 2px solid #6366f1 !important;
+  border-right: 2px solid #6366f1 !important;
+  text-shadow: 0 0 10px rgba(251, 191, 36, 0.4);
 }
 
 .col-strike {
