@@ -75,9 +75,10 @@ class StockTracker:
             try:
                 with open(self.data_file, "r", encoding="utf-8") as f:
                     raw_calls = json.load(f)
-                    self.calls = [self._sanitize_call(c) for c in raw_calls]
-                    self.save_data()
-                    return
+                    if raw_calls:
+                        self.calls = [self._sanitize_call(c) for c in raw_calls]
+                        self.save_data()
+                        return
             except Exception as e:
                 print(f"[StockTracker] Error reading {self.data_file}: {e}")
 
@@ -85,10 +86,16 @@ class StockTracker:
         self.save_data()
 
     def save_data(self):
-        """Saves current state to JSON file."""
+        """Saves current state to JSON file and syncs to Excel (.xlsx) workbook."""
         try:
             with open(self.data_file, "w", encoding="utf-8") as f:
                 json.dump(self.calls, f, indent=2)
+            # Sync to Excel workbook
+            try:
+                from excel_manager import export_stocks_to_excel
+                export_stocks_to_excel(self.calls, os.path.join(os.path.dirname(self.data_file), "stock_recommendations.xlsx"))
+            except Exception:
+                pass
         except Exception as e:
             print(f"[StockTracker] Error saving to {self.data_file}: {e}")
 

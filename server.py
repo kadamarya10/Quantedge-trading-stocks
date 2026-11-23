@@ -574,6 +574,39 @@ async def get_accuracy_summary():
     }
 
 
+@app.get("/api/export/excel/stocks")
+async def export_stocks_excel():
+    """Generates and downloads formatted Excel workbook for all Stock Recommendations."""
+    from excel_manager import export_stocks_to_excel
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_recommendations.xlsx")
+    export_stocks_to_excel(tracker_engine.calls, filepath=path)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=500, detail="Failed to generate Excel file")
+    return FileResponse(path, filename="QuantEdge_Stock_Recommendations.xlsx", media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/export/excel/options")
+async def export_options_excel():
+    """Generates and downloads formatted Excel workbook for all NIFTY Options Trades."""
+    from excel_manager import export_options_to_excel
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "options_trades.xlsx")
+    export_options_to_excel(paper_trader.trade_history, capital=paper_trader.capital, filepath=path)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=500, detail="Failed to generate Excel file")
+    return FileResponse(path, filename="QuantEdge_Options_Trades.xlsx", media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/export/excel/journal")
+async def export_master_journal_excel():
+    """Generates and downloads multi-sheet Master Trading Journal Excel workbook."""
+    from excel_manager import export_master_journal
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "QuantEdge_Trades_Journal.xlsx")
+    export_master_journal(tracker_engine.calls, paper_trader.trade_history, capital=paper_trader.capital, filepath=path)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=500, detail="Failed to generate Excel file")
+    return FileResponse(path, filename="QuantEdge_Master_Trading_Journal.xlsx", media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @app.post("/api/options/trade/close")
 async def close_active_paper_trade():
     """

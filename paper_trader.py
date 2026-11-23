@@ -86,6 +86,16 @@ class PaperTrader:
                     "last_exit_time": self.last_exit_time,
                 }, f)
             os.replace(tmp, self.state_file)
+            # Sync to Excel workbook
+            try:
+                from excel_manager import export_options_to_excel
+                export_options_to_excel(
+                    self.trade_history,
+                    capital=self.capital,
+                    filepath=os.path.join(os.path.dirname(self.state_file), "options_trades.xlsx")
+                )
+            except Exception:
+                pass
         except Exception:
             pass
 

@@ -1231,13 +1231,16 @@
           <h2>🎯 Verified Trade Execution & Recommendation Accuracy Audit</h2>
           <p>Real-time performance tracking and historical accuracy ledger for both <strong>NIFTY Option Trades</strong> (Algo Sniper Executions) and <strong>AI Stock Recommendations</strong> (Growth & Momentum Picks) with transparent entry, target hit, and stop-loss records.</p>
           
-          <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
+          <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center;">
             <button class="nav-tab-btn active" id="btn-acc-options" onclick="switchAccuracyMode('options')" style="font-size: 12px; padding: 6px 14px;">
               <span>⚡</span> NIFTY Options Accuracy (<span id="acc-opt-win-pill">--% Win</span>)
             </button>
             <button class="nav-tab-btn" id="btn-acc-stocks" onclick="switchAccuracyMode('stocks')" style="font-size: 12px; padding: 6px 14px;">
               <span>📊</span> AI Stock Recommendations (<span id="acc-stk-win-pill">--% Hit</span>)
             </button>
+            <a href="/api/export/excel/journal" download="QuantEdge_Master_Trading_Journal.xlsx" class="btn-primary" style="font-size: 12px; padding: 6px 14px; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(135deg, #059669 0%, #10b981 100%); font-weight: 700;">
+              <span>📥</span> Download Master Excel Journal (.xlsx)
+            </a>
           </div>
         </div>
 
@@ -1299,13 +1302,18 @@
         </div>
 
         <!-- Filter Controls -->
-        <div class="news-controls-row" style="margin-bottom: 14px; justify-content: space-between;">
+        <div class="news-controls-row" style="margin-bottom: 14px; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
           <div class="category-chips-list" id="acc-opt-filters">
             <button class="cat-pill active" onclick="filterAccOptions('all')">All Executions (<span id="acc-opt-cnt-all">--</span>)</button>
             <button class="cat-pill" onclick="filterAccOptions('win')">🟢 Profitable Wins (<span id="acc-opt-cnt-win">--</span>)</button>
             <button class="cat-pill" onclick="filterAccOptions('loss')">🔴 Stop-Loss Exits (<span id="acc-opt-cnt-loss">--</span>)</button>
           </div>
-          <button class="btn-icon" onclick="resetPaperTrading()" style="font-size: 11px; padding: 4px 10px;">🔄 Reset Options Ledger</button>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <a href="/api/export/excel/options" download="QuantEdge_Options_Trades.xlsx" class="btn-icon" style="font-size: 11px; padding: 4px 10px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(16, 185, 129, 0.4); color: var(--accent-emerald);">
+              <span>📥</span> Export Options Excel (.xlsx)
+            </a>
+            <button class="btn-icon" onclick="resetPaperTrading()" style="font-size: 11px; padding: 4px 10px;">🔄 Reset Options Ledger</button>
+          </div>
         </div>
 
         <!-- Options Ledger Table -->
@@ -1381,14 +1389,19 @@
         </div>
 
         <!-- Filter Controls -->
-        <div class="news-controls-row" style="margin-bottom: 14px; justify-content: space-between;">
+        <div class="news-controls-row" style="margin-bottom: 14px; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
           <div class="category-chips-list" id="acc-stk-filters">
             <button class="cat-pill active" onclick="filterAccStocks('all')">All Calls (<span id="acc-stk-cnt-all">--</span>)</button>
             <button class="cat-pill" onclick="filterAccStocks('target')">🎯 Targets Hit (<span id="acc-stk-cnt-target">--</span>)</button>
             <button class="cat-pill" onclick="filterAccStocks('stoploss')">🛑 Stoploss Cut (<span id="acc-stk-cnt-sl">--</span>)</button>
             <button class="cat-pill" onclick="filterAccStocks('active')">⏳ Active (<span id="acc-stk-cnt-active">--</span>)</button>
           </div>
-          <button class="btn-icon" onclick="resetStocksTracker()" style="font-size: 11px; padding: 4px 10px;">🔄 Reset Stock Tracker</button>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <a href="/api/export/excel/stocks" download="QuantEdge_Stock_Recommendations.xlsx" class="btn-icon" style="font-size: 11px; padding: 4px 10px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(16, 185, 129, 0.4); color: var(--accent-emerald);">
+              <span>📥</span> Export Stocks Excel (.xlsx)
+            </a>
+            <button class="btn-icon" onclick="resetStocksTracker()" style="font-size: 11px; padding: 4px 10px;">🔄 Reset Stock Tracker</button>
+          </div>
         </div>
 
         <!-- Stock Recommendation Ledger Table -->
