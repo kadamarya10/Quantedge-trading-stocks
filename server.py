@@ -194,7 +194,8 @@ nse_options = NSEFetcher(symbol="NIFTY", use_mock_on_failure=True)
 dhan_options = DhanFetcher()
 oi_analyzer = OIAnalyzer()
 oi_strategy = OIStrategy()
-paper_trader = PaperTrader(initial_capital=100000.0, lot_size=50)
+PAPER_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_state.json")
+paper_trader = PaperTrader(initial_capital=100000.0, lot_size=65, state_file=PAPER_STATE_FILE)
 chart_analyzer = ChartPatternAnalyzer()
 market_intel = MarketIntelligence()
 news_fetcher = NSENewsFetcher()
@@ -504,14 +505,21 @@ def _get_paper_trade_summary(table_data: List[Dict[str, Any]]) -> Dict[str, Any]
 @app.get("/api/options/trades")
 async def get_all_paper_trades():
     """
-    Returns full ledger of all executed paper trades, win rate, and total P&L.
+    Returns full persistent ledger of all executed paper trades, win rate, and total P&L.
     """
     trades = paper_trader.trade_history
-    total_realized_pnl = sum(t.get("realized_pnl", 0.0) for t in trades)
+    total_realized_pnl = round(sum(t.get("realized_pnl", 0.0) for t in trades), 2)
     wins = sum(1 for t in trades if t.get("realized_pnl", 0.0) > 0)
     losses = sum(1 for t in trades if t.get("realized_pnl", 0.0) <= 0)
     win_rate = round((wins / len(trades) * 100), 1) if trades else 0.0
     net_return_pct = round(((paper_trader.capital - 100000.0) / 100000.0) * 100, 2)
+
+    total_gains = sum(t.get("realized_pnl", 0.0) for t in trades if t.get("realized_pnl", 0.0) > 0)
+    total_losses = abs(sum(t.get("realized_pnl", 0.0) for t in trades if t.get("realized_pnl", 0.0) < 0))
+    profit_factor = round(total_gains / (total_losses or 0.01), 2) if total_losses > 0 else (99.0 if total_gains > 0 else 0.0)
+    avg_win = round(total_gains / (wins or 1), 2) if wins else 0.0
+    avg_loss = round(total_losses / (losses or 1), 2) if losses else 0.0
+    total_charges = round(sum(t.get("charges", 0.0) for t in trades), 2)
 
     return {
         "success": True,
@@ -520,10 +528,49 @@ async def get_all_paper_trades():
         "wins": wins,
         "losses": losses,
         "win_rate_pct": win_rate,
-        "total_realized_pnl": round(total_realized_pnl, 2),
+        "total_realized_pnl": total_realized_pnl,
         "net_return_pct": net_return_pct,
+        "profit_factor": profit_factor,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "total_charges": total_charges,
+        "win_loss_ratio": f"{wins}W / {losses}L",
         "active_position": paper_trader.current_position,
         "trades": list(reversed(trades))
+    }
+
+
+@app.get("/api/accuracy/summary")
+async def get_accuracy_summary():
+    """
+    Returns consolidated accuracy and track record audit for both Options trades and Stocks given.
+    """
+    trades = paper_trader.trade_history
+    total_realized_pnl = round(sum(t.get("realized_pnl", 0.0) for t in trades), 2)
+    wins = sum(1 for t in trades if t.get("realized_pnl", 0.0) > 0)
+    losses = sum(1 for t in trades if t.get("realized_pnl", 0.0) <= 0)
+    options_win_rate = round((wins / len(trades) * 100), 1) if trades else 0.0
+    options_return_pct = round(((paper_trader.capital - 100000.0) / 100000.0) * 100, 2)
+    total_gains = sum(t.get("realized_pnl", 0.0) for t in trades if t.get("realized_pnl", 0.0) > 0)
+    total_losses = abs(sum(t.get("realized_pnl", 0.0) for t in trades if t.get("realized_pnl", 0.0) < 0))
+    options_pf = round(total_gains / (total_losses or 0.01), 2) if total_losses > 0 else (99.0 if total_gains > 0 else 0.0)
+
+    stocks_summary = tracker_engine.get_summary()
+
+    return {
+        "success": True,
+        "options": {
+            "total_trades": len(trades),
+            "wins": wins,
+            "losses": losses,
+            "win_rate_pct": options_win_rate,
+            "realized_pnl": total_realized_pnl,
+            "return_pct": options_return_pct,
+            "profit_factor": options_pf,
+            "active_position": paper_trader.current_position,
+            "capital": round(paper_trader.capital, 2)
+        },
+        "stocks": stocks_summary
     }
 
 
@@ -559,7 +606,8 @@ async def close_active_paper_trade():
 @app.post("/api/options/trade/reset")
 async def reset_paper_trading():
     global paper_trader
-    paper_trader = PaperTrader(initial_capital=100000.0, lot_size=50)
+    PAPER_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_state.json")
+    paper_trader = PaperTrader(initial_capital=100000.0, lot_size=65, state_file=PAPER_STATE_FILE)
     return {"success": True, "message": "Paper trader reset to ₹1,00,000 capital."}
 
 

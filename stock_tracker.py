@@ -70,17 +70,12 @@ class StockTracker:
         return c
 
     def load_data(self):
-        """Loads tracker data, strictly keeping only calls started TODAY and sanitizing target/stoploss levels."""
-        today_prefix = datetime.now().strftime("%Y-%m-%d")
+        """Loads tracker data, preserving full historical track record across all sessions."""
         if os.path.exists(self.data_file):
             try:
                 with open(self.data_file, "r", encoding="utf-8") as f:
                     raw_calls = json.load(f)
-                    # Strictly filter: keep ONLY calls whose entry_date is TODAY and sanitize levels
-                    self.calls = [
-                        self._sanitize_call(c) for c in raw_calls 
-                        if str(c.get("entry_date", "")).startswith(today_prefix)
-                    ]
+                    self.calls = [self._sanitize_call(c) for c in raw_calls]
                     self.save_data()
                     return
             except Exception as e:

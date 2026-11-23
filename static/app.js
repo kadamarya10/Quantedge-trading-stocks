@@ -196,6 +196,9 @@ function switchTab(tabId) {
   } else if (tabId === 'options') {
     stopStocksRealtimeTicker();
     fetchLiveOptions();
+  } else if (tabId === 'accuracy') {
+    stopStocksRealtimeTicker();
+    loadAccuracyDashboard();
   } else if (tabId === 'stocks') {
     startStocksRealtimeTicker();
     loadStockTrackerData(false);
@@ -218,6 +221,8 @@ function startTimers() {
   optionsTimer = setInterval(() => {
     if (currentTab === 'options') {
       fetchLiveOptions();
+    } else if (currentTab === 'accuracy' && currentAccuracyMode === 'options') {
+      loadOptionsAccuracyData(true);
     }
   }, optionsPollingSpeed);
 
@@ -236,6 +241,8 @@ function triggerManualRefresh() {
     fetchLiveNews().finally(() => { if (lbl) lbl.innerText = 'Refresh'; });
   } else if (currentTab === 'options') {
     fetchLiveOptions().finally(() => { if (lbl) lbl.innerText = 'Refresh'; });
+  } else if (currentTab === 'accuracy') {
+    loadAccuracyDashboard().finally(() => { if (lbl) lbl.innerText = 'Refresh'; });
   } else if (currentTab === 'stocks') {
     if (currentStockMode === 'single') {
       predictStock(currentStockSymbol).finally(() => { if (lbl) lbl.innerText = 'Refresh'; });
@@ -1141,6 +1148,9 @@ async function resetPaperTrading() {
   try {
     await fetch('/api/options/trade/reset', { method: 'POST' });
     fetchLiveOptions();
+    if (typeof loadAccuracyDashboard === 'function') {
+      loadAccuracyDashboard();
+    }
   } catch (e) {
     console.error(e);
   }
@@ -2253,8 +2263,15 @@ async function loadStockTrackerData(forceRefresh = false) {
     const data = await res.json();
     if (data.success) {
       trackerData = data;
+      cachedStocksAccuracy = data;
       updateTrackerSummaryWidgets(data.summary);
       renderTrackerHistoryTable();
+      if (typeof renderAccStocksView === 'function') {
+        renderAccStocksView(data);
+      }
+      if (typeof updateAccuracyGlobalSummary === 'function') {
+        updateAccuracyGlobalSummary();
+      }
     }
   } catch (err) {
     console.error('Error loading stock tracker data:', err);
@@ -2715,4 +2732,436 @@ async function runBacktest(symbol) {
   } catch (err) {
     body.innerHTML = `<div style="color: var(--accent-rose); padding: 20px;">⚠️ Error executing backtest simulation.</div>`;
   }
+}
+
+// =============================================================
+// TAB 4: TRADE ACCURACY & PERFORMANCE AUDIT CONTROLLERS
+// =============================================================
+
+let currentAccuracyMode = 'options'; // 'options' | 'stocks'
+let currentAccOptFilter = 'all'; // 'all' | 'win' | 'loss'
+let currentAccStkFilter = 'all'; // 'all' | 'target' | 'stoploss' | 'active'
+let cachedOptionsAccuracy = null;
+let cachedStocksAccuracy = null;
+
+function switchAccuracyMode(mode) {
+  currentAccuracyMode = mode;
+  const btnOpt = document.getElementById('btn-acc-options');
+  const btnStk = document.getElementById('btn-acc-stocks');
+  const viewOpt = document.getElementById('acc-options-view');
+  const viewStk = document.getElementById('acc-stocks-view');
+
+  if (btnOpt) btnOpt.classList.toggle('active', mode === 'options');
+  if (btnStk) btnStk.classList.toggle('active', mode === 'stocks');
+  if (viewOpt) viewOpt.style.display = mode === 'options' ? 'block' : 'none';
+  if (viewStk) viewStk.style.display = mode === 'stocks' ? 'block' : 'none';
+
+  if (mode === 'options') {
+    loadOptionsAccuracyData();
+  } else {
+    loadStocksAccuracyData();
+  }
+}
+
+async function loadAccuracyDashboard() {
+  await Promise.allSettled([
+    loadOptionsAccuracyData(),
+    loadStocksAccuracyData()
+  ]);
+  updateAccuracyGlobalSummary();
+}
+
+function updateAccuracyGlobalSummary() {
+  const optTrades = cachedOptionsAccuracy ? (cachedOptionsAccuracy.trades || []) : [];
+  const stkCalls = cachedStocksAccuracy ? (cachedStocksAccuracy.calls || []) : [];
+
+  const optClosed = optTrades.length;
+  const stkClosed = stkCalls.filter(c => c.status === 'TARGET_HIT' || c.status === 'STOPLOSS_HIT').length;
+  const totalClosed = optClosed + stkClosed;
+
+  const optWins = cachedOptionsAccuracy ? (cachedOptionsAccuracy.wins || 0) : 0;
+  const stkWins = stkCalls.filter(c => c.status === 'TARGET_HIT').length;
+  const totalWins = optWins + stkWins;
+  const overallWinRate = totalClosed > 0 ? ((totalWins / totalClosed) * 100).toFixed(1) : '0.0';
+
+  const totalTradesEl = document.getElementById('acc-stat-total-trades');
+  if (totalTradesEl) totalTradesEl.innerText = `${totalClosed} Closed`;
+
+  const winRateEl = document.getElementById('acc-stat-win-rate');
+  if (winRateEl) {
+    winRateEl.innerText = `${overallWinRate}%`;
+    winRateEl.className = Number(overallWinRate) >= 50 ? 'val val-up' : 'val val-down';
+  }
+
+  const optPnl = cachedOptionsAccuracy ? Number(cachedOptionsAccuracy.total_realized_pnl || 0) : 0;
+  const netPnlEl = document.getElementById('acc-stat-net-pnl');
+  if (netPnlEl) {
+    netPnlEl.innerText = `${optPnl >= 0 ? '+' : ''}₹${optPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    netPnlEl.style.color = optPnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+  }
+
+  // Header quick pills
+  const optPill = document.getElementById('acc-opt-win-pill');
+  if (optPill && cachedOptionsAccuracy) {
+    optPill.innerText = `${cachedOptionsAccuracy.win_rate_pct || 0}% Win`;
+  }
+  const stkPill = document.getElementById('acc-stk-win-pill');
+  if (stkPill && cachedStocksAccuracy && cachedStocksAccuracy.summary) {
+    stkPill.innerText = `${cachedStocksAccuracy.summary.win_rate_percent || 0}% Hit`;
+  }
+}
+
+async function loadOptionsAccuracyData(silent = false) {
+  try {
+    const res = await fetch('/api/options/trades');
+    const data = await res.json();
+    if (data.success) {
+      cachedOptionsAccuracy = data;
+      renderAccOptionsView(data);
+      updateAccuracyGlobalSummary();
+    }
+  } catch (err) {
+    console.error('Error fetching options accuracy trades:', err);
+  }
+}
+
+function renderAccOptionsView(data) {
+  if (!data) return;
+
+  // 4 KPI Cards
+  const kpiWin = document.getElementById('acc-opt-win-rate');
+  if (kpiWin) kpiWin.innerText = `${data.win_rate_pct || 0}%`;
+
+  const kpiWinLoss = document.getElementById('acc-opt-win-loss');
+  if (kpiWinLoss) kpiWinLoss.innerText = `${data.wins || 0} Wins • ${data.losses || 0} Losses`;
+
+  const pnl = Number(data.total_realized_pnl || 0);
+  const kpiPnl = document.getElementById('acc-opt-realized-pnl');
+  if (kpiPnl) {
+    kpiPnl.innerText = `${pnl >= 0 ? '+' : ''}₹${pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    kpiPnl.style.color = pnl >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+  }
+
+  const retPct = Number(data.net_return_pct || 0);
+  const kpiRet = document.getElementById('acc-opt-return-pct');
+  if (kpiRet) {
+    kpiRet.innerText = `Return on Capital: ${retPct >= 0 ? '+' : ''}${retPct.toFixed(2)}%`;
+  }
+
+  const kpiPf = document.getElementById('acc-opt-profit-factor');
+  if (kpiPf) kpiPf.innerText = `${data.profit_factor || 0}x`;
+
+  const kpiAvg = document.getElementById('acc-opt-avg-win-loss');
+  if (kpiAvg) {
+    kpiAvg.innerText = `Avg Win: ₹${Number(data.avg_win || 0).toFixed(0)} | Avg Loss: ₹${Number(data.avg_loss || 0).toFixed(0)}`;
+  }
+
+  const cap = Number(data.capital || 100000);
+  const kpiCap = document.getElementById('acc-opt-capital');
+  if (kpiCap) kpiCap.innerText = `₹${cap.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+
+  const kpiActive = document.getElementById('acc-opt-active-status');
+  if (kpiActive) {
+    if (data.active_position) {
+      kpiActive.innerText = `🟢 1 Active: ${data.active_position.instrument || 'Trade'}`;
+      kpiActive.style.color = 'var(--accent-emerald)';
+    } else {
+      kpiActive.innerText = `No Open Position (Ready)`;
+      kpiActive.style.color = 'var(--text-muted)';
+    }
+  }
+
+  // Filter Counts
+  const trades = data.trades || [];
+  const winsCount = data.wins || trades.filter(t => (t.realized_pnl || 0) > 0).length;
+  const lossesCount = data.losses || trades.filter(t => (t.realized_pnl || 0) <= 0).length;
+
+  const cntAll = document.getElementById('acc-opt-cnt-all');
+  if (cntAll) cntAll.innerText = trades.length;
+  const cntWin = document.getElementById('acc-opt-cnt-win');
+  if (cntWin) cntWin.innerText = winsCount;
+  const cntLoss = document.getElementById('acc-opt-cnt-loss');
+  if (cntLoss) cntLoss.innerText = lossesCount;
+
+  renderAccOptionsTable();
+}
+
+function filterAccOptions(status) {
+  currentAccOptFilter = status;
+  document.querySelectorAll('#acc-opt-filters .cat-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('onclick').includes(`'${status}'`));
+  });
+  renderAccOptionsTable();
+}
+
+function renderAccOptionsTable() {
+  const tbody = document.getElementById('acc-options-tbody');
+  if (!tbody || !cachedOptionsAccuracy) return;
+
+  const trades = cachedOptionsAccuracy.trades || [];
+  let filtered = trades;
+  if (currentAccOptFilter === 'win') {
+    filtered = trades.filter(t => (t.realized_pnl || 0) > 0);
+  } else if (currentAccOptFilter === 'loss') {
+    filtered = trades.filter(t => (t.realized_pnl || 0) <= 0);
+  }
+
+  if (!filtered.length) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="11" style="text-align: center; padding: 36px; color: var(--text-muted);">
+          No options trades matching the "${currentAccOptFilter}" filter.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((t, idx) => {
+    const pnl = Number(t.realized_pnl || 0);
+    const isWin = pnl >= 0;
+    const pnlColor = isWin ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+    const pnlSign = isWin ? '+' : '';
+    const pnlPct = Number(t.pnl_percent || t.pnl_pct || 0);
+    const fees = Number(t.charges || t.fees || 0);
+
+    const typeBadge = t.type === 'CE'
+      ? `<span class="badge" style="background: rgba(16,185,129,0.15); color: var(--accent-emerald); font-weight:700;">CE CALL</span>`
+      : `<span class="badge" style="background: rgba(244,63,94,0.15); color: var(--accent-rose); font-weight:700;">PE PUT</span>`;
+
+    const resultBadge = isWin
+      ? `<span class="badge" style="background: rgba(16,185,129,0.2); color: var(--accent-emerald); font-weight:700; border: 1px solid rgba(16,185,129,0.3);">🟢 PROFIT</span>`
+      : `<span class="badge" style="background: rgba(244,63,94,0.2); color: var(--accent-rose); font-weight:700; border: 1px solid rgba(244,63,94,0.3);">🔴 LOSS</span>`;
+
+    const exitReason = t.exit_reason || (isWin ? '🎯 Target Hit' : '🛑 Stop Loss');
+
+    return `
+      <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+        <td style="text-align: center; color: var(--text-muted); font-size: 11px;">${idx + 1}</td>
+        <td>
+          <strong style="color: #ffffff; font-family: var(--font-mono); font-size: 13px;">${t.instrument}</strong>
+          <div style="font-size: 10px; color: var(--text-muted);">${t.entry_reason || 'Sniper Algo Confluence'}</div>
+        </td>
+        <td style="text-align: center;">${typeBadge}</td>
+        <td style="text-align: center; font-family: var(--font-mono); font-weight: 600;">${t.qty || 65}</td>
+        <td style="text-align: right; font-family: var(--font-mono);">
+          <div style="color: #ffffff; font-weight: 700;">₹${Number(t.entry_price || 0).toFixed(2)}</div>
+          <div style="font-size: 10px; color: var(--text-muted);">${t.entry_time || '--'}</div>
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono);">
+          <div style="color: #ffffff; font-weight: 700;">₹${Number(t.exit_price || 0).toFixed(2)}</div>
+          <div style="font-size: 10px; color: var(--text-muted);">${t.exit_time || '--'}</div>
+        </td>
+        <td style="text-align: left; font-size: 11px;">
+          <span style="color: #e2e8f0; font-weight: 500;">${exitReason}</span>
+          ${t.holding_seconds ? `<div style="font-size: 10px; color: var(--text-muted);">${Math.round(t.holding_seconds / 60)} mins held</div>` : ''}
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono); color: var(--text-muted); font-size: 11px;">
+          ₹${fees.toFixed(2)}
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono); font-weight: 700; color: ${pnlColor};">
+          ${pnlSign}₹${Math.abs(pnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono); font-weight: 700; color: ${pnlColor};">
+          ${pnlSign}${pnlPct.toFixed(2)}%
+        </td>
+        <td style="text-align: center;">
+          ${resultBadge}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function loadStocksAccuracyData(silent = false) {
+  try {
+    const res = await fetch('/api/stocks/tracker?filter_status=all');
+    const data = await res.json();
+    if (data.success) {
+      cachedStocksAccuracy = data;
+      renderAccStocksView(data);
+      updateAccuracyGlobalSummary();
+    }
+  } catch (err) {
+    console.error('Error fetching stock recommendations accuracy:', err);
+  }
+}
+
+function renderAccStocksView(data) {
+  if (!data) return;
+  const sum = data.summary || {};
+  const hasClosed = (sum.closed_calls || 0) > 0;
+
+  // 4 KPI Cards
+  const kpiHitRate = document.getElementById('acc-stk-hit-rate');
+  if (kpiHitRate) kpiHitRate.innerText = hasClosed ? `${sum.win_rate_percent || 0}%` : 'Monitoring';
+
+  const kpiHitSumm = document.getElementById('acc-stk-hit-summary');
+  if (kpiHitSumm) {
+    kpiHitSumm.innerText = `${sum.target_hits_count || 0} Targets Hit • ${sum.stoploss_hits_count || 0} SL Cut`;
+  }
+
+  const cumRet = Number(sum.net_cumulative_return_pct || 0);
+  const kpiCumRet = document.getElementById('acc-stk-cum-return');
+  if (kpiCumRet) {
+    kpiCumRet.innerText = `${cumRet >= 0 ? '+' : ''}${cumRet.toFixed(2)}%`;
+    kpiCumRet.style.color = cumRet >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+  }
+
+  const kpiAvgGain = document.getElementById('acc-stk-avg-gain');
+  if (kpiAvgGain) {
+    kpiAvgGain.innerText = hasClosed ? `+${sum.avg_win_pct || 0}% / ${sum.avg_loss_pct || 0}%` : 'Tracking Live';
+  }
+
+  const kpiPf = document.getElementById('acc-stk-profit-factor');
+  if (kpiPf) {
+    kpiPf.innerText = hasClosed ? `Profit Factor: ${sum.profit_factor || 0}x (Payoff ${sum.payoff_ratio || 0}:1)` : 'Monitoring order-book ticks';
+  }
+
+  const kpiActive = document.getElementById('acc-stk-active-count');
+  if (kpiActive) kpiActive.innerText = `${sum.active_calls_count || 0} Live`;
+
+  // Filter Counts
+  const calls = data.calls || [];
+  const cntAll = document.getElementById('acc-stk-cnt-all');
+  if (cntAll) cntAll.innerText = calls.length;
+  const cntTgt = document.getElementById('acc-stk-cnt-target');
+  if (cntTgt) cntTgt.innerText = sum.target_hits_count || 0;
+  const cntSl = document.getElementById('acc-stk-cnt-sl');
+  if (cntSl) cntSl.innerText = sum.stoploss_hits_count || 0;
+  const cntAct = document.getElementById('acc-stk-cnt-active');
+  if (cntAct) cntAct.innerText = sum.active_calls_count || 0;
+
+  renderAccStocksTable();
+}
+
+function filterAccStocks(status) {
+  currentAccStkFilter = status;
+  document.querySelectorAll('#acc-stk-filters .cat-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('onclick').includes(`'${status}'`));
+  });
+  renderAccStocksTable();
+}
+
+function renderAccStocksTable() {
+  const tbody = document.getElementById('acc-stocks-tbody');
+  if (!tbody || !cachedStocksAccuracy) return;
+
+  const calls = cachedStocksAccuracy.calls || [];
+  let filtered = calls;
+  if (currentAccStkFilter === 'target') {
+    filtered = calls.filter(c => c.status === 'TARGET_HIT');
+  } else if (currentAccStkFilter === 'stoploss') {
+    filtered = calls.filter(c => c.status === 'STOPLOSS_HIT');
+  } else if (currentAccStkFilter === 'active') {
+    filtered = calls.filter(c => c.status === 'ACTIVE');
+  }
+
+  if (!filtered.length) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="10" style="text-align: center; padding: 36px; color: var(--text-muted);">
+          No stock calls matching the "${currentAccStkFilter}" status filter.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((c, idx) => {
+    const sym = c.symbol;
+    const isTarget = c.status === 'TARGET_HIT';
+    const isSL = c.status === 'STOPLOSS_HIT';
+    const isActive = c.status === 'ACTIVE';
+
+    let statusBadge = '';
+    if (isTarget) {
+      statusBadge = `<span class="status-target-hit">🎯 TARGET HIT</span>`;
+    } else if (isSL) {
+      statusBadge = `<span class="status-stoploss-hit">🛑 STOPLOSS HIT</span>`;
+    } else {
+      statusBadge = `<span class="status-active"><span class="pulse-dot"></span> ⏳ ACTIVE</span>`;
+    }
+
+    const pnl = Number(c.pnl_percent || 0);
+    const pnlClass = pnl >= 0 ? 'val-up' : 'val-down';
+    const pnlSign = pnl >= 0 ? '+' : '';
+
+    const entryPrice = Number(c.entry_price || 0);
+    const exitPrice = Number(c.exit_price || c.current_ltp || 0);
+    const tgtPrice = Number(c.target_price || 0);
+    const slPrice = Number(c.stop_loss || 0);
+
+    const tgtPct = Number(c.target_pct || (((tgtPrice - entryPrice) / (entryPrice || 1)) * 100)).toFixed(1);
+    const slPct = Number(c.sl_pct || (((slPrice - entryPrice) / (entryPrice || 1)) * 100)).toFixed(1);
+
+    const triggers = (c.triggers && c.triggers.length) ? c.triggers : ['📈 Breakout'];
+    const triggerBadges = triggers.map(t => {
+      let bg = 'rgba(99, 102, 241, 0.2)';
+      let col = '#a5b4fc';
+      let border = 'rgba(99, 102, 241, 0.4)';
+      if (t.includes('News')) {
+        bg = 'rgba(16, 185, 129, 0.2)'; col = 'var(--accent-emerald)'; border = 'rgba(16, 185, 129, 0.4)';
+      } else if (t.includes('Breakout') || t.includes('Volume')) {
+        bg = 'rgba(6, 182, 212, 0.2)'; col = 'var(--accent-cyan)'; border = 'rgba(6, 182, 212, 0.4)';
+      } else if (t.includes('F&O')) {
+        bg = 'rgba(245, 158, 11, 0.2)'; col = 'var(--accent-amber)'; border = 'rgba(245, 158, 11, 0.4)';
+      } else if (t.includes('Earnings')) {
+        bg = 'rgba(168, 85, 247, 0.2)'; col = '#d8b4fe'; border = 'rgba(168, 85, 247, 0.4)';
+      }
+      return `<span style="background: ${bg}; color: ${col}; border: 1px solid ${border}; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: var(--radius-sm); white-space: nowrap;">${t}</span>`;
+    }).join(' ');
+
+    return `
+      <tr id="acc-trk-row-${c.id || sym}" style="cursor: pointer;" onclick="openGrowthThesisModal('${sym}')" title="Click to view full AI research thesis">
+        <td style="text-align: center; color: var(--text-muted);">${idx + 1}</td>
+        <td>
+          <strong style="color: #ffffff; font-family: var(--font-mono); font-size: 13px;">${sym}</strong>
+          <div style="font-size: 10px; color: var(--text-muted);">${c.company_name || sym} • ${c.sector || 'NSE'}</div>
+        </td>
+        <td style="text-align: center;">
+          ${statusBadge}
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono);">
+          <strong style="color: #ffffff;">₹${entryPrice.toFixed(2)}</strong>
+          <div style="font-size: 10px; color: var(--text-muted);">${(c.entry_date || '').split(' ')[0] || '--'}</div>
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono); font-size: 11px;">
+          <div style="color: var(--accent-emerald);">Tgt: ₹${tgtPrice.toFixed(1)} (+${tgtPct}%)</div>
+          <div style="color: var(--accent-rose);">SL: ₹${slPrice.toFixed(1)} (${slPct}%)</div>
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono); font-weight: 700;">
+          <div style="color: #ffffff;">₹${exitPrice.toFixed(2)}</div>
+          <div style="font-size: 10px; color: var(--text-muted);">${c.status === 'ACTIVE' ? 'Live LTP' : (c.exit_date || '').split(' ')[0]}</div>
+        </td>
+        <td style="text-align: right; font-family: var(--font-mono); font-weight: 700; font-size: 13px;">
+          <span class="${pnlClass}">${pnlSign}${pnl.toFixed(2)}%</span>
+        </td>
+        <td style="text-align: center; font-size: 11px; color: var(--text-muted);">
+          ${c.time_held || '1d'}
+        </td>
+        <td style="font-size: 11px; max-width: 280px;">
+          <div style="margin-bottom: 4px;">${triggerBadges}</div>
+          <div style="color: var(--text-secondary); line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;" title="${c.catalyst || c.why_rising || ''}">
+            ${c.catalyst || c.why_rising || 'High conviction multi-factor AI breakout'}
+          </div>
+        </td>
+        <td style="text-align: center;" onclick="event.stopPropagation();">
+          <div style="display: flex; gap: 4px; justify-content: center;">
+            <button class="btn-icon" style="padding: 4px 8px; font-size: 11px; color: var(--accent-amber); border-color: rgba(245, 158, 11, 0.4);" onclick="event.stopPropagation(); openGrowthThesisModal('${sym}')" title="AI Research Thesis">
+              🧠 Thesis
+            </button>
+            <button class="btn-primary" style="padding: 4px 8px; font-size: 11px;" onclick="event.stopPropagation(); openStockFromScanner('${sym}')" title="Candlestick Chart">
+              📈 Chart
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// Function alias for button onclick compatibility
+function resetStocksTracker() {
+  return resetStockTracker();
 }

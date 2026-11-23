@@ -34,6 +34,10 @@
           <span>📊</span> Stocks & Predictions
           <span class="badge-count" id="stocks-badge">Active Catalysts</span>
         </button>
+        <button class="nav-tab-btn" id="tab-btn-accuracy" onclick="switchTab('accuracy')">
+          <span>🎯</span> Trade Accuracy & History
+          <span class="badge-count" id="nav-acc-badge" style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald);">Audit</span>
+        </button>
         <button class="nav-tab-btn" id="tab-btn-news" onclick="switchTab('news')">
           <span>📰</span> Live News & Filings
           <span class="badge-count" id="news-count-badge">Multi-Source</span>
@@ -1217,6 +1221,207 @@
       </div>
     </main>
 
+    <!-- ========================================================
+         TAB 4: TRADE ACCURACY & PERFORMANCE AUDIT
+         ======================================================== -->
+    <main id="panel-accuracy" class="tab-content-panel">
+      <!-- Accuracy Header Banner -->
+      <div class="news-header-banner" style="background: linear-gradient(180deg, rgba(16, 185, 129, 0.12) 0%, rgba(13, 19, 39, 0.95) 100%); border-color: rgba(16, 185, 129, 0.35);">
+        <div class="news-banner-info">
+          <h2>🎯 Verified Trade Execution & Recommendation Accuracy Audit</h2>
+          <p>Real-time performance tracking and historical accuracy ledger for both <strong>NIFTY Option Trades</strong> (Algo Sniper Executions) and <strong>AI Stock Recommendations</strong> (Growth & Momentum Picks) with transparent entry, target hit, and stop-loss records.</p>
+          
+          <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
+            <button class="nav-tab-btn active" id="btn-acc-options" onclick="switchAccuracyMode('options')" style="font-size: 12px; padding: 6px 14px;">
+              <span>⚡</span> NIFTY Options Accuracy (<span id="acc-opt-win-pill">--% Win</span>)
+            </button>
+            <button class="nav-tab-btn" id="btn-acc-stocks" onclick="switchAccuracyMode('stocks')" style="font-size: 12px; padding: 6px 14px;">
+              <span>📊</span> AI Stock Recommendations (<span id="acc-stk-win-pill">--% Hit</span>)
+            </button>
+          </div>
+        </div>
+
+        <div class="news-stats-row">
+          <div class="news-stat-chip">
+            <div class="val" id="acc-stat-total-trades">--</div>
+            <div class="lbl">Total Logged Trades</div>
+          </div>
+          <div class="news-stat-chip">
+            <div class="val val-up" id="acc-stat-win-rate">--%</div>
+            <div class="lbl">Overall Accuracy</div>
+          </div>
+          <div class="news-stat-chip">
+            <div class="val" id="acc-stat-net-pnl" style="color: var(--accent-emerald);">₹--</div>
+            <div class="lbl">Net Realized P&L</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- VIEW A: OPTIONS TRADES ACCURACY -->
+      <div id="acc-options-view">
+        <!-- 4 KPI Cards for Options -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px;">
+          <div class="tracker-kpi-card" style="border-color: rgba(16, 185, 129, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Options Win Rate</span>
+              <span class="tracker-kpi-icon">🎯</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-opt-win-rate" style="color: var(--accent-emerald);">--%</div>
+            <div class="tracker-kpi-sub" id="acc-opt-win-loss">0 Wins • 0 Losses</div>
+          </div>
+
+          <div class="tracker-kpi-card" style="border-color: rgba(99, 102, 241, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Realized Options P&L</span>
+              <span class="tracker-kpi-icon">💰</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-opt-realized-pnl" style="color: var(--text-primary);">₹0.00</div>
+            <div class="tracker-kpi-sub" id="acc-opt-return-pct">Return on Capital: +0.0%</div>
+          </div>
+
+          <div class="tracker-kpi-card" style="border-color: rgba(6, 182, 212, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Profit Factor & Payoff</span>
+              <span class="tracker-kpi-icon">⚖️</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-opt-profit-factor" style="color: var(--accent-cyan);">--x</div>
+            <div class="tracker-kpi-sub" id="acc-opt-avg-win-loss">Avg Win: ₹-- | Avg Loss: ₹--</div>
+          </div>
+
+          <div class="tracker-kpi-card" style="border-color: rgba(245, 158, 11, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Capital & Active Position</span>
+              <span class="tracker-kpi-icon">💼</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-opt-capital" style="color: var(--accent-amber);">₹1,00,000</div>
+            <div class="tracker-kpi-sub" id="acc-opt-active-status">No Open Position</div>
+          </div>
+        </div>
+
+        <!-- Filter Controls -->
+        <div class="news-controls-row" style="margin-bottom: 14px; justify-content: space-between;">
+          <div class="category-chips-list" id="acc-opt-filters">
+            <button class="cat-pill active" onclick="filterAccOptions('all')">All Executions (<span id="acc-opt-cnt-all">--</span>)</button>
+            <button class="cat-pill" onclick="filterAccOptions('win')">🟢 Profitable Wins (<span id="acc-opt-cnt-win">--</span>)</button>
+            <button class="cat-pill" onclick="filterAccOptions('loss')">🔴 Stop-Loss Exits (<span id="acc-opt-cnt-loss">--</span>)</button>
+          </div>
+          <button class="btn-icon" onclick="resetPaperTrading()" style="font-size: 11px; padding: 4px 10px;">🔄 Reset Options Ledger</button>
+        </div>
+
+        <!-- Options Ledger Table -->
+        <div class="glass-card">
+          <div class="option-chain-container">
+            <table class="option-chain-table" style="font-size: 12px; text-align: left;">
+              <thead>
+                <tr>
+                  <th style="width: 36px; text-align: center;">#</th>
+                  <th>INSTRUMENT / STRIKE</th>
+                  <th style="text-align: center;">TYPE</th>
+                  <th style="text-align: center;">QTY</th>
+                  <th style="text-align: right;">ENTRY (₹ / TIME)</th>
+                  <th style="text-align: right;">EXIT (₹ / TIME)</th>
+                  <th style="text-align: left;">EXIT TRIGGER REASON</th>
+                  <th style="text-align: right;">FEES</th>
+                  <th style="text-align: right;">REALIZED P&L (₹)</th>
+                  <th style="text-align: right;">P&L %</th>
+                  <th style="text-align: center;">RESULT</th>
+                </tr>
+              </thead>
+              <tbody id="acc-options-tbody">
+                <tr>
+                  <td colspan="11" style="text-align: center; padding: 36px; color: var(--text-muted);">
+                    Loading options trade history...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- VIEW B: STOCKS RECOMMENDATIONS ACCURACY -->
+      <div id="acc-stocks-view" style="display: none;">
+        <!-- 4 KPI Cards for Stocks -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px;">
+          <div class="tracker-kpi-card" style="border-color: rgba(16, 185, 129, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Stock Picks Hit Rate</span>
+              <span class="tracker-kpi-icon">🎯</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-stk-hit-rate" style="color: var(--accent-emerald);">--%</div>
+            <div class="tracker-kpi-sub" id="acc-stk-hit-summary">0 Targets Hit • 0 SL Cut</div>
+          </div>
+
+          <div class="tracker-kpi-card" style="border-color: rgba(99, 102, 241, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Cumulative Trade Return</span>
+              <span class="tracker-kpi-icon">📈</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-stk-cum-return" style="color: var(--text-primary);">+0.00%</div>
+            <div class="tracker-kpi-sub">Sum of all closed stock calls</div>
+          </div>
+
+          <div class="tracker-kpi-card" style="border-color: rgba(6, 182, 212, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Avg Gain vs Controlled SL</span>
+              <span class="tracker-kpi-icon">⚖️</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-stk-avg-gain" style="color: var(--accent-cyan);">+--% / ---%</div>
+            <div class="tracker-kpi-sub" id="acc-stk-profit-factor">Profit Factor: --x</div>
+          </div>
+
+          <div class="tracker-kpi-card" style="border-color: rgba(245, 158, 11, 0.4);">
+            <div class="tracker-kpi-header">
+              <span class="tracker-kpi-title">Currently Active Stocks</span>
+              <span class="tracker-kpi-icon">⏳</span>
+            </div>
+            <div class="tracker-kpi-val" id="acc-stk-active-count" style="color: var(--accent-amber);">-- Live</div>
+            <div class="tracker-kpi-sub">Live tracking against targets</div>
+          </div>
+        </div>
+
+        <!-- Filter Controls -->
+        <div class="news-controls-row" style="margin-bottom: 14px; justify-content: space-between;">
+          <div class="category-chips-list" id="acc-stk-filters">
+            <button class="cat-pill active" onclick="filterAccStocks('all')">All Calls (<span id="acc-stk-cnt-all">--</span>)</button>
+            <button class="cat-pill" onclick="filterAccStocks('target')">🎯 Targets Hit (<span id="acc-stk-cnt-target">--</span>)</button>
+            <button class="cat-pill" onclick="filterAccStocks('stoploss')">🛑 Stoploss Cut (<span id="acc-stk-cnt-sl">--</span>)</button>
+            <button class="cat-pill" onclick="filterAccStocks('active')">⏳ Active (<span id="acc-stk-cnt-active">--</span>)</button>
+          </div>
+          <button class="btn-icon" onclick="resetStocksTracker()" style="font-size: 11px; padding: 4px 10px;">🔄 Reset Stock Tracker</button>
+        </div>
+
+        <!-- Stock Recommendation Ledger Table -->
+        <div class="glass-card">
+          <div class="option-chain-container">
+            <table class="option-chain-table" style="font-size: 12px; text-align: left;">
+              <thead>
+                <tr>
+                  <th style="width: 36px; text-align: center;">#</th>
+                  <th>STOCK / SECTOR</th>
+                  <th style="text-align: center;">STATUS</th>
+                  <th style="text-align: right;">ENTRY & DATE</th>
+                  <th style="text-align: right;">TARGET & SL PLAN</th>
+                  <th style="text-align: right; color: var(--accent-cyan);">EXIT / CURRENT</th>
+                  <th style="text-align: right;">P&L (%)</th>
+                  <th style="text-align: center;">TIME HELD</th>
+                  <th style="color: var(--accent-cyan); min-width: 250px;">CATALYST / WHY GIVEN</th>
+                  <th style="text-align: center;">ACTION</th>
+                </tr>
+              </thead>
+              <tbody id="acc-stocks-tbody">
+                <tr>
+                  <td colspan="10" style="text-align: center; padding: 36px; color: var(--text-muted);">
+                    Loading stock recommendations history...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+
     <!-- Backtest Results Modal -->
     <div class="modal-overlay" id="backtest-modal" style="display: none;">
       <div class="modal-dialog">
@@ -1672,7 +1877,7 @@
       style="position: fixed; top: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; max-width: 380px; pointer-events: none;">
     </div>
 
-    <script src="/static/app.js?v=3.8"></script>
+    <script src="/static/app.js?v=3.9"></script>
 </body>
 
 </html>
