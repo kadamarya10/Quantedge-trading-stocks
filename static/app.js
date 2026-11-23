@@ -3166,3 +3166,30 @@ function renderAccStocksTable() {
 function resetStocksTracker() {
   return resetStockTracker();
 }
+
+// Trader Playbook Modal Controllers
+function openTraderGuideModal() {
+  const modal = document.getElementById('trader-guide-modal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeTraderGuideModal() {
+  const modal = document.getElementById('trader-guide-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+// 1-Click Copy Trade Setup to Clipboard
+function copyTradeSetup(text) {
+  if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showTrackerToast({
+        id: 'toast-copy-' + Date.now(),
+        message: '📋 Copied trade setup to clipboard!'
+      });
+    }).catch(() => {
+      prompt('Copy trade setup:', text);
+    });
+  } else {
+    prompt('Copy trade setup:', text);
+  }
+}
