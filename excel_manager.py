@@ -135,7 +135,7 @@ def export_stocks_to_excel(calls: List[Dict[str, Any]], filepath: str = "stock_r
         is_sl = status == "STOPLOSS_HIT"
         pnl = float(c.get("pnl_percent", 0.0) or 0.0)
 
-        status_text = "🎯 TARGET HIT" if is_target else ("🛑 STOPLOSS HIT" if is_sl else "⏳ ACTIVE")
+        status_text = "Target Hit" if is_target else ("Stop Loss" if is_sl else "Active")
         fill_to_use = WIN_FILL if is_target else (LOSS_FILL if is_sl else ACTIVE_FILL)
         font_to_use = WIN_FONT if is_target else (LOSS_FONT if is_sl else ACTIVE_FONT)
 
@@ -273,6 +273,9 @@ def export_options_to_excel(trade_history: List[Dict[str, Any]], capital: float 
         fill_to_use = WIN_FILL if is_win else LOSS_FILL
         font_to_use = WIN_FONT if is_win else LOSS_FONT
 
+        # Exit reason MUST strictly be only 2: "Target Hit" or "Stop Loss"
+        clean_exit_reason = "Target Hit" if (is_win or "target" in str(t.get("exit_reason", "")).lower()) else "Stop Loss"
+
         row_vals = [
             idx,
             t.get("instrument", "NIFTY Option"),
@@ -282,7 +285,7 @@ def export_options_to_excel(trade_history: List[Dict[str, Any]], capital: float 
             float(t.get("entry_price", 0.0)),
             t.get("exit_time", "--"),
             float(t.get("exit_price", 0.0)),
-            t.get("exit_reason", "Target Hit" if is_win else "Stop Loss"),
+            clean_exit_reason,
             fees,
             pnl,
             pnl_pct / 100.0,

@@ -948,8 +948,8 @@ async function openTradeHistoryModal() {
             <div>₹${Number(t.exit_price || 0).toFixed(2)}</div>
             <div style="font-size: 10px; color: var(--text-muted);">${(t.exit_time || '').split(' ')[1] || ''}</div>
           </td>
-          <td style="padding: 10px; text-align: left; color: var(--text-secondary); font-size: 11px;">
-            ${t.exit_reason || 'Exit'}
+          <td style="padding: 10px; text-align: left; color: var(--text-secondary); font-size: 11px; font-weight: 600;">
+            ${(isWin || String(t.exit_reason || '').toLowerCase().includes('target')) ? '🎯 Target Hit' : '🛑 Stop Loss'}
           </td>
           <td style="padding: 10px; text-align: right; font-weight: 700; color: ${pnlColor}; font-size: 13px;">
             ${sign}₹${pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -2933,7 +2933,8 @@ function renderAccOptionsTable() {
       ? `<span class="badge" style="background: rgba(16,185,129,0.2); color: var(--accent-emerald); font-weight:700; border: 1px solid rgba(16,185,129,0.3);">🟢 PROFIT</span>`
       : `<span class="badge" style="background: rgba(244,63,94,0.2); color: var(--accent-rose); font-weight:700; border: 1px solid rgba(244,63,94,0.3);">🔴 LOSS</span>`;
 
-    const exitReason = t.exit_reason || (isWin ? '🎯 Target Hit' : '🛑 Stop Loss');
+    // Exit reason must be strictly only 2: either "Target Hit" or "Stop Loss"
+    const exitReason = (isWin || String(t.exit_reason || '').toLowerCase().includes('target')) ? '🎯 Target Hit' : '🛑 Stop Loss';
 
     return `
       <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">

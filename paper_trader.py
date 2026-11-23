@@ -106,7 +106,17 @@ class PaperTrader:
             with open(self.state_file, "r", encoding="utf-8") as f:
                 s = json.load(f)
             self.capital = s.get("capital", self.capital)
-            self.trade_history = s.get("trade_history", [])
+            raw_trades = s.get("trade_history", [])
+            # Enforce strict exit reason: ONLY TWO ("Target Hit" or "Stop Loss")
+            self.trade_history = []
+            for t in raw_trades:
+                pnl_val = float(t.get("realized_pnl", 0.0) or 0.0)
+                raw_r = str(t.get("exit_reason", "")).lower()
+                if "target" in raw_r or pnl_val >= 0:
+                    t["exit_reason"] = "Target Hit"
+                else:
+                    t["exit_reason"] = "Stop Loss"
+                self.trade_history.append(t)
             self.current_position = s.get("current_position")
             self.last_exit_time = s.get("last_exit_time", 0.0)
         except Exception:
@@ -197,20 +207,19 @@ class PaperTrader:
             # Theta time-stop
             time_stop = pos.get("time_stop_sec", 600)
             if held_seconds >= time_stop and gain_pct < 8.0:
-                return self.close_position(current_ltp, reason=f"⏱️ {int(time_stop / 60)}m Time-Stop Hit (Theta Decay Protection)")
+                return self.close_position(current_ltp, reason="Stop Loss" if gain_pct < 0 else "Target Hit")
 
             # Hard SL / target
             if pos_type == "SHORT":
                 if current_ltp >= sl_price:
-                    return self.close_position(current_ltp, reason="Stop-Loss Hit")
+                    return self.close_position(current_ltp, reason="Stop Loss")
                 if current_ltp <= tgt_price:
                     return self.close_position(current_ltp, reason="Target Hit")
             else:
                 if current_ltp <= sl_price:
-                    reason = "🛡️ Trailing SL Hit" if pos.get("trailing_stage", 0) > 0 else "Stop-Loss Hit"
-                    return self.close_position(current_ltp, reason=reason)
+                    return self.close_position(current_ltp, reason="Stop Loss")
                 if current_ltp >= tgt_price:
-                    return self.close_position(current_ltp, reason="🎯 Target Hit (Full Profit Secured)")
+                    return self.close_position(current_ltp, reason="Target Hit")
 
             # Opposite-signal reversal (protected by min-hold and persistence)
             sig = signal_info.get("signal", "")
@@ -226,7 +235,7 @@ class PaperTrader:
                     self._opposite_signal_count += 1
                     if self._opposite_signal_count >= 3:
                         self._opposite_signal_count = 0
-                        return self.close_position(current_ltp, reason="Confirmed Trend Reversal (3-Tick Sustained)")
+                        return self.close_position(current_ltp, reason="Target Hit" if gain_pct >= 0 else "Stop Loss")
                 else:
                     self._opposite_signal_count = 0
             else:
@@ -342,6 +351,9 @@ class PaperTrader:
         self._opposite_signal_count = 0
         held = int(now - pos.get("entry_ts", now))
 
+        # Strict rule: Exit reason must be strictly only 2: "Target Hit" or "Stop Loss"
+        clean_reason = "Target Hit" if (pnl >= 0 or "target" in str(reason).lower()) else "Stop Loss"
+
         self.trade_history.append({
             **pos,
             "exit_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -350,7 +362,7 @@ class PaperTrader:
             "charges": charges,
             "realized_pnl": pnl,
             "pnl_percent": round(pnl_pct, 2),
-            "exit_reason": reason,
+            "exit_reason": clean_reason,
             "holding_seconds": held,
         })
         name = pos["instrument"]
@@ -358,5 +370,5 @@ class PaperTrader:
         self._save_state()
 
         emoji = "🟢 PROFIT" if pnl >= 0 else "🔴 LOSS"
-        return (f"⏹️ [TRADE CLOSED - {reason}] {name} | Exit: ₹{fill:.2f} | Net P&L: ₹{pnl:+.2f} "
+        return (f"⏹️ [TRADE CLOSED - {clean_reason}] {name} | Exit: ₹{fill:.2f} | Net P&L: ₹{pnl:+.2f} "
                 f"({pnl_pct:+.2f}%, charges ₹{charges:.2f}) | {emoji} | Held: {held}s | Balance: ₹{self.capital:,.2f}")
