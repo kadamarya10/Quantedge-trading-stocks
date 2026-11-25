@@ -22,7 +22,7 @@ let showGreeks = false;
 let audioEnabled = true;
 let lastKnownSignal = null;
 let cachedAtmStrike = null;
-let optionsPollingSpeed = 1000; // 1s default for sub-second rapid updates
+let optionsPollingSpeed = 500; // 500ms ultra-fast real-time options streaming
 let microTickEngine = true; // LIVE by default (Groww order book ticker)
 let previousStrikeLtp = {};
 let previousPaperPnl = null;
@@ -82,7 +82,7 @@ document.addEventListener('DOMContentLoaded', () => {
       btnStkFluc.classList.add('active');
       btnStkFluc.style.color = 'var(--accent-emerald)';
       btnStkFluc.style.borderColor = 'rgba(16, 185, 129, 0.4)';
-      lblStkFluc.innerText = 'LIVE (1.5s Ticks)';
+      lblStkFluc.innerText = 'LIVE (0.7s Real-Time)';
     } else {
       btnStkFluc.classList.remove('active');
       btnStkFluc.style.color = 'var(--text-muted)';
@@ -278,8 +278,11 @@ function startTimers() {
   newsTimer = setInterval(() => {
     if (currentTab === 'news') {
       fetchLiveNews(false);
+    } else {
+      // Background poll every 20s to keep breaking news count fresh
+      fetchLiveNews(false);
     }
-  }, 25000);
+  }, 8000); // 8s real-time news interval (served sub-millisecond from memory)
 }
 
 function triggerManualRefresh() {
@@ -360,7 +363,9 @@ async function fetchLiveNews(showSpinner = true) {
     document.getElementById('stat-risk-news').innerText = stats.risk_alerts || 0;
     document.getElementById('news-count-badge').innerText = `${data.count} Stories`;
 
-    renderNewsCards(data.news || []);
+    if (currentTab === 'news') {
+      renderNewsCards(data.news || []);
+    }
 
   } catch (err) {
     console.error('Error fetching news:', err);
@@ -480,8 +485,11 @@ function toggleMicroTickFluctuation() {
 
 function setOptionSpeed(ms) {
   optionsPollingSpeed = ms;
-  document.querySelectorAll('#btn-speed-1s, #btn-speed-3s').forEach(b => b.classList.remove('active'));
-  const activeBtn = ms === 1000 ? document.getElementById('btn-speed-1s') : document.getElementById('btn-speed-3s');
+  document.querySelectorAll('#btn-speed-500ms, #btn-speed-1s, #btn-speed-3s').forEach(b => b.classList.remove('active'));
+  let activeId = 'btn-speed-500ms';
+  if (ms === 1000) activeId = 'btn-speed-1s';
+  else if (ms === 3000) activeId = 'btn-speed-3s';
+  const activeBtn = document.getElementById(activeId);
   if (activeBtn) activeBtn.classList.add('active');
   startTimers();
 }
@@ -2152,7 +2160,7 @@ function startStocksRealtimeTicker() {
     } finally {
       isTickRequestInFlight = false;
     }
-  }, 1400); // 1.4s real-time tick interval
+  }, 700); // 700ms ultra-fast real-time stock ticker for all stocks
 }
 
 function stopStocksRealtimeTicker() {
@@ -2172,7 +2180,7 @@ function toggleStockRealtimeTicks() {
       btn.style.color = 'var(--accent-emerald)';
       btn.style.borderColor = 'rgba(16, 185, 129, 0.4)';
     }
-    if (lbl) lbl.innerText = 'LIVE (1.5s Ticks)';
+    if (lbl) lbl.innerText = 'LIVE (0.7s Real-Time)';
     startStocksRealtimeTicker();
   } else {
     if (btn) {

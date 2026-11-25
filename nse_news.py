@@ -39,8 +39,12 @@ class MultiSourceNewsFetcher:
     def __init__(self):
         self.cached_news: List[Dict[str, Any]] = []
         self.last_fetch_time: float = 0.0
-        self.cache_ttl: int = 25  # 25 seconds TTL
+        self.cache_ttl: int = 45  # 45 seconds TTL
         self.session = requests.Session()
+        from requests.adapters import HTTPAdapter
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=1)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             "Accept": "application/json, application/xml, text/xml, */*"
@@ -472,23 +476,7 @@ class MultiSourceNewsFetcher:
     # -------------------------------------------------------------
     # Master Aggregation & Concurrency
     # -------------------------------------------------------------
-    def fetch_all_sources(self, max_total: int = 150) -> List[Dict[str, Any]]:
-        """
-        Executes parallel fetching across all 6 verified news sources concurrently:
-        1. NSE India Official
-        2. Economic Times
-        3. Livemint
-        4. Moneycontrol (Live)
-        5. Nuvama Institutional Equities & Research
-        6. Financial Media Hub (CNBC-TV18, NDTV Profit, Business Standard)
-
-        Strictly enforces a 14-day freshness cutoff so stale legacy articles (e.g. April 2024)
-        are completely discarded, and sorts all stories chronologically by datetime descending.
-        """
-        now = time.time()
-        if self.cached_news and (now - self.last_fetch_time) < self.cache_ttl:
-            return self.cached_news
-
+    def _refresh_news_internal(self, max_total: int = 150) -> List[Dict[str, Any]]:
         with ThreadPoolExecutor(max_workers=6) as executor:
             fut_nse = executor.submit(self.fetch_nse_official)
             fut_et = executor.submit(self.fetch_economic_times)
@@ -529,9 +517,33 @@ class MultiSourceNewsFetcher:
 
         if deduped:
             self.cached_news = deduped[:max_total]
-            self.last_fetch_time = now
+            self.last_fetch_time = time.time()
 
         return self.cached_news or self._get_fallback_news()
+
+    def fetch_all_sources(self, max_total: int = 150) -> List[Dict[str, Any]]:
+        """
+        Returns real-time news across all 6 verified sources.
+        Serves immediately from memory cache in sub-millisecond time.
+        """
+        now = time.time()
+        if self.cached_news and (now - self.last_fetch_time) < self.cache_ttl:
+            return self.cached_news[:max_total]
+        return self._refresh_news_internal(max_total)
+
+    def start_background_streamer(self):
+        """Detached background daemon continuously refreshing news headlines every 20 seconds."""
+        import threading
+        def _worker():
+            time.sleep(1.0)
+            while True:
+                try:
+                    self._refresh_news_internal()
+                    time.sleep(20)
+                except Exception:
+                    time.sleep(15)
+        t = threading.Thread(target=_worker, daemon=True, name="NewsStreamerWorker")
+        t.start()
 
     def _get_fallback_news(self) -> List[Dict[str, Any]]:
         return [

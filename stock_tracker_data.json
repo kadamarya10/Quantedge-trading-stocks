@@ -21,10 +21,10 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": 0.04,
+    "pnl_percent": 1.14,
     "time_held": "Active Today",
-    "current_ltp": 128.31,
-    "high_price": 128.31,
+    "current_ltp": 129.72,
+    "high_price": 129.77,
     "low_price": 128.26
   },
   {
@@ -51,11 +51,11 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": -0.04,
+    "pnl_percent": -0.05,
     "time_held": "Active Today",
-    "current_ltp": 14106.95,
+    "current_ltp": 14105.0,
     "high_price": 14112.0,
-    "low_price": 14106.95
+    "low_price": 14105.0
   },
   {
     "id": "TRK-INFY-1795585278",
@@ -81,11 +81,11 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": -0.42,
+    "pnl_percent": -0.69,
     "time_held": "Active Today",
-    "current_ltp": 1136.0,
+    "current_ltp": 1132.9,
     "high_price": 1140.8,
-    "low_price": 1136.0
+    "low_price": 1132.9
   },
   {
     "id": "TRK-SBIN-1795585278",
@@ -111,10 +111,10 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": 0.0,
+    "pnl_percent": 0.41,
     "time_held": "Active Today",
-    "current_ltp": 1144.85,
-    "high_price": 1144.85,
+    "current_ltp": 1149.45,
+    "high_price": 1151.5,
     "low_price": 1144.8
   },
   {
@@ -282,9 +282,9 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": 1.11,
+    "pnl_percent": 1.15,
     "time_held": "Active Today",
-    "current_ltp": 2515.4,
+    "current_ltp": 2516.4,
     "high_price": 2516.8,
     "low_price": 2487.05
   },
@@ -337,13 +337,13 @@
       "\ud83d\udcc8 Trend Breakout",
       "\ud83d\udcd1 Earnings Beat"
     ],
-    "status": "ACTIVE",
-    "exit_price": null,
-    "exit_date": null,
-    "pnl_percent": 0.2,
-    "time_held": "Active Today",
-    "current_ltp": 25.09,
-    "high_price": 25.21,
+    "status": "TARGET_HIT",
+    "exit_price": 41.33,
+    "exit_date": "2026-11-25 12:00:44",
+    "pnl_percent": 65.06,
+    "time_held": "21d 21h",
+    "current_ltp": 41.33,
+    "high_price": 41.33,
     "low_price": 25.04
   },
   {
@@ -369,10 +369,10 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": 0.84,
+    "pnl_percent": 2.58,
     "time_held": "Active Today",
-    "current_ltp": 4562.0,
-    "high_price": 4562.0,
+    "current_ltp": 4640.7,
+    "high_price": 4641.4,
     "low_price": 4514.05
   },
   {
@@ -484,13 +484,13 @@
       "\u26a1 F&O Long Buildup",
       "\ud83d\udcd1 Earnings Beat"
     ],
-    "status": "ACTIVE",
-    "exit_price": null,
-    "exit_date": null,
-    "pnl_percent": -0.22,
-    "time_held": "Active Today",
-    "current_ltp": 412.0,
-    "high_price": 412.95,
+    "status": "TARGET_HIT",
+    "exit_price": 466.75,
+    "exit_date": "2026-11-25 12:00:44",
+    "pnl_percent": 13.04,
+    "time_held": "21d 21h",
+    "current_ltp": 466.75,
+    "high_price": 466.75,
     "low_price": 411.9
   },
   {
@@ -607,9 +607,9 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": 4.3,
+    "pnl_percent": 3.95,
     "time_held": "Active Today",
-    "current_ltp": 2139.5,
+    "current_ltp": 2132.4,
     "high_price": 2140.4,
     "low_price": 2051.25
   },
@@ -637,9 +637,9 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": -0.02,
+    "pnl_percent": -0.11,
     "time_held": "Active Today",
-    "current_ltp": 4928.1,
+    "current_ltp": 4924.0,
     "high_price": 4958.6,
     "low_price": 4845.3
   }

@@ -260,13 +260,7 @@ SECTOR_WATCHLIST = {
 }
 
 
-# Pre-warm session on startup
-@app.on_event("startup")
-async def startup_event():
-    try:
-        nse_options.prewarm()
-    except Exception:
-        pass
+# Startup routines are managed by the unified startup_event handler below
 
 
 # ---------------------------------------------------------
@@ -1140,21 +1134,37 @@ async def get_stocks_realtime_ticks(active_symbol: Optional[str] = Query(None)):
     now = time.time()
     market_open = is_nse_market_open()
 
-    # 1. Determine list of symbols to tick
+    # 1. Determine comprehensive list of symbols to tick across ALL stocks
     symbols_to_tick = []
+    # All active recommendation tracker stocks
+    if hasattr(tracker_engine, "calls") and tracker_engine.calls:
+        for c in tracker_engine.calls:
+            sym = c.get("symbol")
+            if sym and sym not in symbols_to_tick:
+                symbols_to_tick.append(sym)
+
+    # All stocks in catalyst scanned list
     cached_stocks = _ALL_STOCKS_CACHE.get("data") or []
     for s in cached_stocks:
         sym = s.get("symbol")
         if sym and sym not in symbols_to_tick:
             symbols_to_tick.append(sym)
 
+    # Core high-liquidity leaders across all sectors & categories
+    CORE_TERMINAL_STOCKS = [
+        "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "SBIN",
+        "LT", "ITC", "TATAMOTORS", "MARUTI", "M&M", "BAJAJ-AUTO", "HAL", "BEL",
+        "RVNL", "COALINDIA", "TRENT", "TITAN", "ZOMATO", "HCLTECH", "WIPRO",
+        "KOTAKBANK", "AXISBANK", "TATASTEEL", "NTPC", "ONGC", "IRFC", "BHEL"
+    ]
+    for sym in CORE_TERMINAL_STOCKS:
+        if sym not in symbols_to_tick:
+            symbols_to_tick.append(sym)
+
     if active_symbol:
         clean_act = active_symbol.strip().upper().replace(".NS", "")
         if clean_act and clean_act not in symbols_to_tick:
             symbols_to_tick.append(clean_act)
-
-    if not symbols_to_tick:
-        symbols_to_tick = ["RELIANCE", "TCS", "INFY", "HCLTECH", "ICICIBANK", "HAL", "BHARTIARTL", "ZOMATO"]
 
     # 2. Fetch live real market quotes from official NSE feeds
     # When market is closed, if state is already initialized, serve directly from memory in < 1ms!
@@ -1468,13 +1478,26 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def _background_prewarm_caches():
-    time.sleep(1.5)
+    time.sleep(1.0)
     try:
+        # 1. Warm NSE options session
+        nse_options.prewarm()
+    except Exception:
+        pass
+
+    try:
+        # 2. Launch background news streamer (refreshes all 6 news sources every 20s)
+        news_fetcher.start_background_streamer()
+    except Exception:
+        pass
+
+    try:
+        # 3. Pre-warm marquee stock predictions in parallel
         from concurrent.futures import ThreadPoolExecutor
         marquee = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "TATAMOTORS", "BHARTIARTL", "HAL"]
         with ThreadPoolExecutor(max_workers=6) as executor:
             list(executor.map(lambda s: StockPredictor(s).predict_price_movement(), marquee))
-        print("[QuantEdge Engine] Marquee stock predictions pre-warmed for instant sub-10ms response.")
+        print("[QuantEdge Engine] System pre-warmed for instant real-time response.")
     except Exception as e:
         print(f"[QuantEdge Engine] Pre-warmer notice: {e}")
 

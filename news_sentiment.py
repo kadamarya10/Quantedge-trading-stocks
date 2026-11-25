@@ -37,6 +37,10 @@ class NewsSentimentAnalyzer:
         self.query = query
         self.rss_url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}+when:1d&hl=en-IN&gl=IN&ceid=IN:en"
         self.session = requests.Session()
+        from requests.adapters import HTTPAdapter
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=1)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             "Accept": "application/rss+xml, application/xml, text/xml"
@@ -54,7 +58,7 @@ class NewsSentimentAnalyzer:
             return self.last_headlines
 
         try:
-            res = self.session.get(self.rss_url, timeout=6)
+            res = self.session.get(self.rss_url, timeout=2.5)
             if res.status_code != 200:
                 return self.last_headlines
 
