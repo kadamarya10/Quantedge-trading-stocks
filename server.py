@@ -18,19 +18,57 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+# Official NSE Trading Holidays (YYYY-MM-DD)
+NSE_TRADING_HOLIDAYS = {
+    # 2026 Known NSE Holidays
+    "2026-01-26",  # Republic Day
+    "2026-02-16",  # Mahashivratri
+    "2026-03-04",  # Holi
+    "2026-03-20",  # Id-Ul-Fitr
+    "2026-03-27",  # Ram Navami
+    "2026-04-03",  # Good Friday
+    "2026-04-14",  # Dr. B. R. Ambedkar Jayanti
+    "2026-05-01",  # Maharashtra Day
+    "2026-05-27",  # Bakri Id
+    "2026-06-26",  # Muharram
+    "2026-08-15",  # Independence Day
+    "2026-09-14",  # Ganesh Chaturthi
+    "2026-10-02",  # Mahatma Gandhi Jayanti
+    "2026-10-20",  # Dussehra
+    "2026-11-08",  # Diwali Laxmi Pujan
+    "2026-11-10",  # Diwali Balipratipada
+    "2026-11-24",  # Guru Nanak Jayanti / Market Holiday
+    "2026-12-25",  # Christmas
+    # 2025/2024 Holidays
+    "2024-11-15", "2024-11-20", "2025-11-05"
+}
+
+_MARKET_MANUAL_OVERRIDE: Optional[bool] = None  # None = Auto, True = Force Open, False = Force Closed
+
 def is_nse_market_open() -> bool:
     """
     Checks if Indian Equity/Derivatives market is currently open.
-    NSE trading hours: Monday - Friday, 09:15 AM to 03:30 PM IST.
+    Accounts for weekends, official NSE trading holidays, and trading hours (09:15 AM to 03:30 PM IST).
     """
+    global _MARKET_MANUAL_OVERRIDE
+    if _MARKET_MANUAL_OVERRIDE is not None:
+        return _MARKET_MANUAL_OVERRIDE
+
     try:
         now_utc = datetime.now(timezone.utc)
         ist = now_utc + timedelta(hours=5, minutes=30)
-        # 0 = Monday, ..., 4 = Friday, 5 = Saturday, 6 = Sunday
+        today_str = ist.strftime("%Y-%m-%d")
+
+        # 1. Official NSE Trading Holidays
+        if today_str in NSE_TRADING_HOLIDAYS:
+            return False
+
+        # 2. Weekend Check (5 = Saturday, 6 = Sunday)
         if ist.weekday() >= 5:
             return False
+
+        # 3. Official NSE Market Trading Hours: 09:15 AM (555 mins) to 03:30 PM (930 mins) IST
         minutes = ist.hour * 60 + ist.minute
-        # 09:15 = 555 mins, 15:30 = 930 mins
         return 555 <= minutes <= 930
     except Exception:
         return False
@@ -258,8 +296,9 @@ async def get_live_options_analysis(realtime: bool = Query(True), force_refresh:
     if not force_refresh and _OPTIONS_CACHE["data"] and (now - _OPTIONS_CACHE["last_updated"]) < _OPTIONS_CACHE["ttl"]:
         res = dict(_OPTIONS_CACHE["data"])
         
-        # Real-time live order-book micro-fluctuations
-        if realtime and res.get("source_label") != "DHAN_API":
+        # Real-time live order-book micro-fluctuations MUST ONLY RUN WHEN MARKET IS GENUINELY OPEN!
+        # When market is closed (holiday / weekend / off-hours), NEVER drift. Strictly display official closing price!
+        if market_open and realtime and res.get("source_label") != "DHAN_API":
             drift = random.choice([-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5])
             base_spot = float(res.get("base_spot_price", res.get("spot_price", 22600.0)))
             spot_p = round(base_spot + drift, 2)
@@ -286,7 +325,17 @@ async def get_live_options_analysis(realtime: bool = Query(True), force_refresh:
             res["table_data"] = new_table
 
         res["market_open"] = market_open
-        res["paper_trade"] = _get_paper_trade_summary(res.get("table_data", []))
+        if market_open:
+            res["paper_trade"] = _get_paper_trade_summary(res.get("table_data", []))
+        else:
+            res["paper_trade"] = {
+                "capital": round(paper_trader.capital, 2),
+                "position": paper_trader.current_position,
+                "realized_pnl": round(paper_trader._today_pnl(), 2),
+                "active_pnl": 0.0,
+                "signal": "WAIT",
+                "reason": "Market is Closed (Official 3:30 PM Settlement)"
+            }
         return res
 
     t_start = time.time()
@@ -325,20 +374,22 @@ async def get_live_options_analysis(realtime: bool = Query(True), force_refresh:
             market_context=market_context
         )
 
-        # 5. Paper Trader Execution
-        curr_eval_price = signal_info.get("estimated_entry_price", 0.0)
-        if paper_trader.current_position:
-            # Check strike price
-            pos = paper_trader.current_position
-            try:
-                stk = int(pos["instrument"].split()[1])
-                match = next((s for s in analysis.get("table_data", []) if int(s["strike"]) == stk), None)
-                if match:
-                    curr_eval_price = match["ce_ltp"] if pos["type"] == "CE" else match["pe_ltp"]
-            except Exception:
-                pass
+        # 5. Paper Trader Execution (Only during live market hours!)
+        trade_action = None
+        if market_open:
+            curr_eval_price = signal_info.get("estimated_entry_price", 0.0)
+            if paper_trader.current_position:
+                # Check strike price
+                pos = paper_trader.current_position
+                try:
+                    stk = int(pos["instrument"].split()[1])
+                    match = next((s for s in analysis.get("table_data", []) if int(s["strike"]) == stk), None)
+                    if match:
+                        curr_eval_price = match["ce_ltp"] if pos["type"] == "CE" else match["pe_ltp"]
+                except Exception:
+                    pass
 
-        trade_action = paper_trader.process_signal(signal_info, curr_eval_price)
+            trade_action = paper_trader.process_signal(signal_info, curr_eval_price)
 
         # 6. Format Response with Complete Option Greeks & Buyer Strike Intelligence
         spot_p = analysis.get("spot_price", 22600.0)
@@ -418,8 +469,15 @@ async def get_live_options_analysis(realtime: bool = Query(True), force_refresh:
             "last_action": trade_action or None,
             "optimal_strikes": optimal_strikes,
             "table_data": enriched_table,
-            "market_open": is_nse_market_open(),
-            "paper_trade": _get_paper_trade_summary(analysis.get("table_data", []))
+            "market_open": market_open,
+            "paper_trade": _get_paper_trade_summary(analysis.get("table_data", [])) if market_open else {
+                "capital": round(paper_trader.capital, 2),
+                "position": paper_trader.current_position,
+                "realized_pnl": round(paper_trader._today_pnl(), 2),
+                "active_pnl": 0.0,
+                "signal": "WAIT",
+                "reason": "Market is Closed (Official 3:30 PM Settlement)"
+            }
         }
 
         _OPTIONS_CACHE["data"] = payload
@@ -1176,15 +1234,18 @@ async def get_stocks_realtime_ticks(active_symbol: Optional[str] = Query(None)):
                 s["change"] = ticks[sym]["change"]
                 s["p_change"] = ticks[sym]["p_change"]
 
-    # 4. Evaluate active target and stoploss hits in real time
+    # 4. Evaluate active target and stoploss hits in real time (Only during live market hours!)
     alerts = []
     tracker_summary = {}
-    try:
-        tracker_engine.update_ticks(ticks)
-        alerts = tracker_engine.pop_recent_alerts()
+    if market_open:
+        try:
+            tracker_engine.update_ticks(ticks)
+            alerts = tracker_engine.pop_recent_alerts()
+            tracker_summary = tracker_engine.get_summary()
+        except Exception as e:
+            print(f"[Tracker Tick Error] {e}")
+    else:
         tracker_summary = tracker_engine.get_summary()
-    except Exception as e:
-        print(f"[Tracker Tick Error] {e}")
 
     return {
         "success": True,
@@ -1194,6 +1255,40 @@ async def get_stocks_realtime_ticks(active_symbol: Optional[str] = Query(None)):
         "ticks": ticks,
         "alerts": alerts,
         "tracker_summary": tracker_summary
+    }
+
+
+@app.get("/api/market/status")
+async def get_market_status():
+    """Returns current market open/closed status, holiday check, and IST time."""
+    now_utc = datetime.now(timezone.utc)
+    ist = now_utc + timedelta(hours=5, minutes=30)
+    today_str = ist.strftime("%Y-%m-%d")
+    is_holiday = today_str in NSE_TRADING_HOLIDAYS
+    open_status = is_nse_market_open()
+
+    return {
+        "success": True,
+        "market_open": open_status,
+        "is_holiday": is_holiday,
+        "holiday_date": today_str if is_holiday else None,
+        "override": _MARKET_MANUAL_OVERRIDE,
+        "status_label": "NSE LIVE MARKET" if open_status else (
+            "NSE CLOSED (MARKET HOLIDAY)" if is_holiday else "NSE CLOSED (OFF-HOURS / SETTLED)"
+        ),
+        "ist_time": ist.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+
+@app.post("/api/market/override")
+async def set_market_override(force_open: Optional[bool] = Query(None)):
+    """Manually override market status: True (Force Open), False (Force Closed), or None (Auto)."""
+    global _MARKET_MANUAL_OVERRIDE
+    _MARKET_MANUAL_OVERRIDE = force_open
+    return {
+        "success": True,
+        "market_open": is_nse_market_open(),
+        "override": _MARKET_MANUAL_OVERRIDE
     }
 
 

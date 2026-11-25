@@ -54,14 +54,41 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStockTrackerData(false);
   startTimers();
 
-  // Ensure live streaming ticker is ACTIVE by default
+  // Freeze fluctuations when market is closed
+  const isMarketOpenNow = isNSEMarketOpen();
+  microTickEngine = isMarketOpenNow;
+  isStockTicksActive = isMarketOpenNow;
+
   const btnFluc = document.getElementById('btn-toggle-fluctuation');
   const lblFluc = document.getElementById('fluctuation-status-lbl');
   if (btnFluc && lblFluc) {
-    btnFluc.classList.add('active');
-    btnFluc.style.color = 'var(--accent-emerald)';
-    btnFluc.style.borderColor = 'rgba(16, 185, 129, 0.4)';
-    lblFluc.innerText = 'ACTIVE (Live Streaming)';
+    if (isMarketOpenNow) {
+      btnFluc.classList.add('active');
+      btnFluc.style.color = 'var(--accent-emerald)';
+      btnFluc.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+      lblFluc.innerText = 'ACTIVE (Live Streaming)';
+    } else {
+      btnFluc.classList.remove('active');
+      btnFluc.style.color = 'var(--text-muted)';
+      btnFluc.style.borderColor = 'var(--border-subtle)';
+      lblFluc.innerText = 'FROZEN (Market Closed)';
+    }
+  }
+
+  const btnStkFluc = document.getElementById('btn-toggle-stock-ticks');
+  const lblStkFluc = document.getElementById('stock-ticks-status-lbl');
+  if (btnStkFluc && lblStkFluc) {
+    if (isMarketOpenNow) {
+      btnStkFluc.classList.add('active');
+      btnStkFluc.style.color = 'var(--accent-emerald)';
+      btnStkFluc.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+      lblStkFluc.innerText = 'LIVE (1.5s Ticks)';
+    } else {
+      btnStkFluc.classList.remove('active');
+      btnStkFluc.style.color = 'var(--text-muted)';
+      btnStkFluc.style.borderColor = 'var(--border-subtle)';
+      lblStkFluc.innerText = 'FROZEN (Market Closed)';
+    }
   }
 
   // Setup Canvas
@@ -83,20 +110,41 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // -------------------------------------------------------------
-// Clock & Audio Alert Synthesizer
+// Official NSE Trading Holidays & Market Status Engine
 // -------------------------------------------------------------
+const NSE_HOLIDAYS_LIST = [
+  '2026-01-26', '2026-02-16', '2026-03-04', '2026-03-20', '2026-03-27',
+  '2026-04-03', '2026-04-14', '2026-05-01', '2026-05-27', '2026-06-26',
+  '2026-08-15', '2026-09-14', '2026-10-02', '2026-10-20', '2026-11-08',
+  '2026-11-10', '2026-11-24', '2026-12-25', '2024-11-15', '2024-11-20', '2025-11-05'
+];
+
+let serverMarketOpen = null; // synced directly from server
+
 function isNSEMarketOpen() {
+  if (serverMarketOpen !== null) return serverMarketOpen;
+
   const now = new Date();
   const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
   const ist = new Date(utc + (3600000 * 5.5));
-  const day = ist.getDay(); // 0 = Sun, 6 = Sat
+
+  const yyyy = ist.getFullYear();
+  const mm = String(ist.getMonth() + 1).padStart(2, '0');
+  const dd = String(ist.getDate()).padStart(2, '0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  // 1. Holiday Check
+  if (NSE_HOLIDAYS_LIST.includes(todayStr)) return false;
+
+  // 2. Weekend Check (0 = Sun, 6 = Sat)
+  const day = ist.getDay();
   if (day === 0 || day === 6) return false;
 
+  // 3. Official Trading Hours (09:15 AM = 555 mins, 03:30 PM = 930 mins)
   const hours = ist.getHours();
   const minutes = ist.getMinutes();
   const totalMinutes = hours * 60 + minutes;
 
-  // 9:15 AM = 555 mins, 3:30 PM = 930 mins
   return totalMinutes >= 555 && totalMinutes <= 930;
 }
 
@@ -111,7 +159,7 @@ function initClock() {
       clockEl.innerHTML = `${isOpen ? '🟢' : '🔴'} ${timeStr} • <span style="font-size: 10px; font-weight:700;">${isOpen ? 'NSE LIVE' : 'NSE CLOSED'}</span>`;
     }
     if (feedStatusText) {
-      feedStatusText.innerText = isOpen ? 'NSE LIVE MARKET' : 'NSE CLOSED (3:30 PM SETTLE)';
+      feedStatusText.innerText = isOpen ? 'NSE LIVE MARKET' : 'NSE CLOSED (MARKET HOLIDAY / SETTLED)';
     }
   };
   update();
@@ -467,6 +515,10 @@ async function fetchLiveOptions() {
 
     if (!data.success) return;
 
+    if (data.market_open !== undefined) {
+      serverMarketOpen = data.market_open;
+    }
+
     // Top Ribbon Metrics
     const spot = Number(data.spot_price || 0);
     document.getElementById('opt-spot-price').innerText = spot ? spot.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '--';
@@ -478,10 +530,10 @@ async function fetchLiveOptions() {
     const srcBadge = document.getElementById('opt-source-badge');
     if (srcBadge) {
       if (!isOpen) {
-        srcBadge.innerText = microTickEngine ? 'SIM PRACTICE' : '3:30 PM SETTLE';
-        srcBadge.style.background = microTickEngine ? 'rgba(99, 102, 241, 0.2)' : 'rgba(244, 63, 94, 0.2)';
-        srcBadge.style.color = microTickEngine ? 'var(--accent-cyan)' : 'var(--accent-rose)';
-        srcBadge.title = microTickEngine ? 'Off-market practice ticks active. Click button above to freeze.' : 'Official 3:30 PM market closing price.';
+        srcBadge.innerText = '3:30 PM SETTLE';
+        srcBadge.style.background = 'rgba(244, 63, 94, 0.2)';
+        srcBadge.style.color = 'var(--accent-rose)';
+        srcBadge.title = 'Market is closed. Official closing settlement snapshot.';
       } else {
         srcBadge.innerText = src === 'DHAN_API' ? 'BROKER LIVE' : 'NSE LIVE';
         srcBadge.style.background = 'rgba(16, 185, 129, 0.2)';

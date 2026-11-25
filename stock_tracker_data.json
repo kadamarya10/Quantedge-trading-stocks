@@ -339,9 +339,9 @@
     "status": "ACTIVE",
     "exit_price": null,
     "exit_date": null,
-    "pnl_percent": 4.15,
+    "pnl_percent": 4.14,
     "time_held": "Active Today",
-    "current_ltp": 1351.0,
+    "current_ltp": 1350.95,
     "high_price": 1357.6,
     "low_price": 1295.95
   },
