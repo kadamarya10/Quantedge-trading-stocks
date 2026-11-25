@@ -973,6 +973,9 @@ def _enrich_with_real_market_quotes(stocks: List[Dict[str, Any]]):
     """
     if not stocks:
         return
+    # If market is closed and stocks already have valid prices, skip re-enriching to keep response sub-millisecond
+    if not is_nse_market_open() and all(s.get("ltp") and s["ltp"] > 0 for s in stocks):
+        return
     syms = [s.get("symbol") for s in stocks if s.get("symbol")]
     if not syms:
         return
@@ -1154,7 +1157,20 @@ async def get_stocks_realtime_ticks(active_symbol: Optional[str] = Query(None)):
         symbols_to_tick = ["RELIANCE", "TCS", "INFY", "HCLTECH", "ICICIBANK", "HAL", "BHARTIARTL", "ZOMATO"]
 
     # 2. Fetch live real market quotes from official NSE feeds
-    real_quotes = real_market_feed.fetch_batch_quotes(symbols_to_tick)
+    # When market is closed, if state is already initialized, serve directly from memory in < 1ms!
+    if not market_open and all(s in _STOCK_TICKS_STATE for s in symbols_to_tick):
+        real_quotes = {
+            s: {
+                "ltp": _STOCK_TICKS_STATE[s]["ltp"],
+                "previous_close": _STOCK_TICKS_STATE[s]["prev_close"],
+                "change": round(_STOCK_TICKS_STATE[s]["ltp"] - _STOCK_TICKS_STATE[s]["prev_close"], 2),
+                "p_change": round(((_STOCK_TICKS_STATE[s]["ltp"] - _STOCK_TICKS_STATE[s]["prev_close"]) / _STOCK_TICKS_STATE[s]["prev_close"]) * 100, 2) if _STOCK_TICKS_STATE[s]["prev_close"] else 0.0,
+                "tick_dir": 0,
+                "volume": 0
+            } for s in symbols_to_tick
+        }
+    else:
+        real_quotes = real_market_feed.fetch_batch_quotes(symbols_to_tick)
     ticks = {}
 
     import random
@@ -1336,17 +1352,17 @@ async def get_ai_growth_picks():
         if picks:
             return {"success": True, "count": len(picks), "picks": picks}
 
-    # If empty, analyze top 6 liquid marquee leaders
+    # If empty, analyze top 6 liquid marquee leaders in parallel via ThreadPool
     marquee_picks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "TATAMOTORS", "ICICIBANK"]
-    results = []
-    for sym in marquee_picks:
+    from concurrent.futures import ThreadPoolExecutor
+    def _fetch_pred(sym):
         try:
-            pred = StockPredictor(sym).predict_price_movement()
-            if pred:
-                results.append(pred)
+            return StockPredictor(sym).predict_price_movement()
         except Exception:
-            pass
-    
+            return None
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = [p for p in executor.map(_fetch_pred, marquee_picks) if p]
+
     results.sort(key=lambda x: x.get("prediction", {}).get("score", 50), reverse=True)
     return {"success": True, "count": len(results), "picks": results}
 
@@ -1449,6 +1465,24 @@ if not os.path.exists(STATIC_DIR):
     os.makedirs(STATIC_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _background_prewarm_caches():
+    time.sleep(1.5)
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        marquee = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "TATAMOTORS", "BHARTIARTL", "HAL"]
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            list(executor.map(lambda s: StockPredictor(s).predict_price_movement(), marquee))
+        print("[QuantEdge Engine] Marquee stock predictions pre-warmed for instant sub-10ms response.")
+    except Exception as e:
+        print(f"[QuantEdge Engine] Pre-warmer notice: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    import threading
+    threading.Thread(target=_background_prewarm_caches, daemon=True).start()
 
 
 def run_server(port: Optional[int] = None, host: str = "0.0.0.0"):

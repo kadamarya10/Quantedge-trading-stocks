@@ -6,8 +6,9 @@ Implements multi-source fallback (Yahoo Finance NSE feeds + NSE NextApi) with hi
 
 import time
 import requests
+from requests.adapters import HTTPAdapter
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 
 # Known ticker renames/mappings on exchange feeds
@@ -21,12 +22,40 @@ SYMBOL_MAPPINGS = {
 
 _LIVE_QUOTE_CACHE: Dict[str, Dict[str, Any]] = {}
 _LAST_PREV_LTP: Dict[str, float] = {}
-CACHE_TTL_SECONDS = 1.4  # Ultra-fresh 1.4s cache for sub-second rapid terminal ticks
+
+# Official NSE Trading Holidays
+NSE_HOLIDAYS_SET = {
+    "2026-01-26", "2026-02-16", "2026-03-04", "2026-03-20", "2026-03-27",
+    "2026-04-03", "2026-04-14", "2026-05-01", "2026-05-27", "2026-06-26",
+    "2026-08-15", "2026-09-14", "2026-10-02", "2026-10-20", "2026-11-08",
+    "2026-11-10", "2026-11-24", "2026-12-25"
+}
+
+def is_market_active() -> bool:
+    """Returns True if NSE market is currently active in live trading session."""
+    try:
+        now_utc = datetime.now(timezone.utc)
+        ist = now_utc + timedelta(hours=5, minutes=30)
+        today_str = ist.strftime("%Y-%m-%d")
+        if today_str in NSE_HOLIDAYS_SET or ist.weekday() >= 5:
+            return False
+        mins = ist.hour * 60 + ist.minute
+        return 555 <= mins <= 930
+    except Exception:
+        return False
+
+def get_effective_cache_ttl() -> float:
+    """Returns 300s TTL when market is closed (zero drift), or 2.5s TTL during live trading."""
+    return 2.5 if is_market_active() else 300.0
 
 
 class RealPriceFetcher:
     def __init__(self):
         self.session = requests.Session()
+        # High-performance connection pooling with persistent HTTP keep-alive
+        adapter = HTTPAdapter(pool_connections=30, pool_maxsize=30, max_retries=1)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*"
@@ -39,11 +68,12 @@ class RealPriceFetcher:
         """
         clean_sym = symbol.strip().upper().replace(".NS", "").replace(".BO", "")
         now = time.time()
+        ttl = get_effective_cache_ttl()
 
         # Check short-lived cache
         if clean_sym in _LIVE_QUOTE_CACHE:
             cached = _LIVE_QUOTE_CACHE[clean_sym]
-            if (now - cached.get("_cached_at", 0)) < CACHE_TTL_SECONDS:
+            if (now - cached.get("_cached_at", 0)) < ttl:
                 return cached
 
         # 1. Primary Method: Direct Yahoo Finance 1m Chart Meta Feed
@@ -52,7 +82,7 @@ class RealPriceFetcher:
 
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d"
-            res = self.session.get(url, timeout=3.5)
+            res = self.session.get(url, timeout=1.8)
             if res.status_code == 200:
                 payload = res.json()
                 result = payload.get("chart", {}).get("result")
@@ -94,7 +124,11 @@ class RealPriceFetcher:
         except Exception:
             pass
 
-        # 2. Secondary Fallback: If Yahoo was blocked or symbol failed, try nsepython.nse_quote
+        # Fast fallback: If existing cache exists from prior fetch, return immediately without blocking!
+        if not quote_data and clean_sym in _LIVE_QUOTE_CACHE:
+            return _LIVE_QUOTE_CACHE[clean_sym]
+
+        # 2. Secondary Fallback: If no cache exists at all, try nsepython once
         if not quote_data:
             try:
                 import nsepython
@@ -144,6 +178,15 @@ class RealPriceFetcher:
             _LIVE_QUOTE_CACHE[clean_sym] = quote_data
             return quote_data
 
+        if clean_sym in _LIVE_QUOTE_CACHE:
+            return _LIVE_QUOTE_CACHE[clean_sym]
+
+        return None
+
+        if quote_data:
+            _LIVE_QUOTE_CACHE[clean_sym] = quote_data
+            return quote_data
+
         # If cache exists from prior fetch, return it rather than returning None
         if clean_sym in _LIVE_QUOTE_CACHE:
             return _LIVE_QUOTE_CACHE[clean_sym]
@@ -160,12 +203,13 @@ class RealPriceFetcher:
             return {}
 
         now = time.time()
+        ttl = get_effective_cache_ttl()
         results = {}
         symbols_to_fetch = []
 
         # Check existing fresh cache
         for sym in clean_symbols:
-            if sym in _LIVE_QUOTE_CACHE and (now - _LIVE_QUOTE_CACHE[sym].get("_cached_at", 0)) < CACHE_TTL_SECONDS:
+            if sym in _LIVE_QUOTE_CACHE and (now - _LIVE_QUOTE_CACHE[sym].get("_cached_at", 0)) < ttl:
                 results[sym] = _LIVE_QUOTE_CACHE[sym]
             else:
                 symbols_to_fetch.append(sym)

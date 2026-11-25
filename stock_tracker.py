@@ -7,10 +7,14 @@ All past calls removed; starts fresh from TODAY.
 import json
 import os
 import time
+import concurrent.futures
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 TRACKER_DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracker_data.json")
+
+# Background thread pool for non-blocking Excel (.xlsx) file serialization
+_EXCEL_EXPORT_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="StockExcelWriter")
 
 # Starts fresh from today — zero past calls
 SEED_TRACK_RECORD: List[Dict[str, Any]] = []
@@ -21,6 +25,7 @@ class StockTracker:
         self.data_file = data_file
         self.calls: List[Dict[str, Any]] = []
         self.recent_alerts: List[Dict[str, Any]] = []
+        self._last_tick_save: float = time.time()
         self.load_data()
 
     def _sanitize_call(self, c: Dict[str, Any]) -> Dict[str, Any]:
@@ -85,17 +90,23 @@ class StockTracker:
         self.calls = []
         self.save_data()
 
-    def save_data(self):
-        """Saves current state to JSON file and syncs to Excel (.xlsx) workbook."""
+    def save_data(self, sync_excel: bool = True):
+        """Saves current state to JSON file and syncs to Excel (.xlsx) workbook asynchronously."""
         try:
             with open(self.data_file, "w", encoding="utf-8") as f:
                 json.dump(self.calls, f, indent=2)
-            # Sync to Excel workbook
-            try:
-                from excel_manager import export_stocks_to_excel
-                export_stocks_to_excel(self.calls, os.path.join(os.path.dirname(self.data_file), "stock_recommendations.xlsx"))
-            except Exception:
-                pass
+
+            # Sync to Excel workbook asynchronously in background thread to guarantee 0ms latency impact
+            if sync_excel:
+                calls_snapshot = [dict(c) for c in self.calls]
+                excel_path = os.path.join(os.path.dirname(self.data_file), "stock_recommendations.xlsx")
+                def _do_excel_export(snapshot, path):
+                    try:
+                        from excel_manager import export_stocks_to_excel
+                        export_stocks_to_excel(snapshot, path)
+                    except Exception as ex:
+                        print(f"[StockTracker Background Excel Export Error] {ex}")
+                _EXCEL_EXPORT_POOL.submit(_do_excel_export, calls_snapshot, excel_path)
         except Exception as e:
             print(f"[StockTracker] Error saving to {self.data_file}: {e}")
 
@@ -191,7 +202,7 @@ class StockTracker:
         Checks if active calls have hit their target price or stoploss price today.
         """
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        updated = False
+        status_changed = False
 
         for c in self.calls:
             if c.get("status") != "ACTIVE":
@@ -221,7 +232,7 @@ class StockTracker:
                 c["exit_date"] = now_str
                 c["pnl_percent"] = round(((new_ltp - entry_price) / entry_price) * 100, 2)
                 c["time_held"] = self._compute_duration(c.get("entry_date", now_str), now_str)
-                updated = True
+                status_changed = True
 
                 self.recent_alerts.append({
                     "id": c.get("id"),
@@ -243,7 +254,7 @@ class StockTracker:
                 c["exit_date"] = now_str
                 c["pnl_percent"] = round(((new_ltp - entry_price) / entry_price) * 100, 2)
                 c["time_held"] = self._compute_duration(c.get("entry_date", now_str), now_str)
-                updated = True
+                status_changed = True
 
                 self.recent_alerts.append({
                     "id": c.get("id"),
@@ -258,12 +269,15 @@ class StockTracker:
                     "message": f"🛑 STOPLOSS HIT: {sym} touched ₹{new_ltp:.2f} ({c['pnl_percent']:.2f}%). Capital protected."
                 })
             else:
-                # Active PnL fluctuation
+                # Active in-memory PnL fluctuation
                 c["pnl_percent"] = round(((new_ltp - entry_price) / entry_price) * 100, 2)
-                updated = True
 
-        if updated:
-            self.save_data()
+        if status_changed:
+            self.save_data(sync_excel=True)
+        elif (time.time() - self._last_tick_save) > 60.0:
+            # Periodic throttled JSON checkpoint every 60s without blocking Excel creation
+            self.save_data(sync_excel=False)
+            self._last_tick_save = time.time()
 
     def get_summary(self) -> Dict[str, Any]:
         """Calculates track record performance statistics starting from today."""

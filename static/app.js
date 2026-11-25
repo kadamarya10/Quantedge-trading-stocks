@@ -2122,12 +2122,15 @@ function renderAllStocksTable() {
 // -------------------------------------------------------------
 // REAL-TIME STOCK PRICE FLUCTUATION & TICK ENGINE
 // -------------------------------------------------------------
+let isTickRequestInFlight = false;
+
 function startStocksRealtimeTicker() {
   if (stocksTickTimer) clearInterval(stocksTickTimer);
   if (!isStockTicksActive) return;
 
   stocksTickTimer = setInterval(async () => {
-    if (currentTab !== 'stocks' || !isStockTicksActive) return;
+    if (currentTab !== 'stocks' || !isStockTicksActive || isTickRequestInFlight) return;
+    isTickRequestInFlight = true;
     try {
       const activeSym = currentStockSymbol || '';
       const res = await fetch(`/api/stocks/ticks?active_symbol=${encodeURIComponent(activeSym)}`);
@@ -2146,6 +2149,8 @@ function startStocksRealtimeTicker() {
       }
     } catch (e) {
       // Quiet background error catch
+    } finally {
+      isTickRequestInFlight = false;
     }
   }, 1400); // 1.4s real-time tick interval
 }

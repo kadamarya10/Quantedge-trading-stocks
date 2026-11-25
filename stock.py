@@ -48,6 +48,13 @@ _NIFTY_BENCHMARK_CACHE = {
 # Cache for Yahoo daily candle history to avoid rate-limiting during scans (TTL: 1 hour)
 _YAHOO_HISTORY_CACHE: Dict[str, Dict[str, Any]] = {}
 
+# High-performance in-memory caching to eliminate duplicate network calls
+_FUNDAMENTALS_CACHE: Dict[str, Dict[str, Any]] = {}       # TTL: 12 hours (company name, sector, P/E)
+_QUARTERLY_RESULTS_CACHE: Dict[str, Dict[str, Any]] = {}   # TTL: 12 hours (NSE earnings reports)
+_WEEKLY_MTF_CACHE: Dict[str, Dict[str, Any]] = {}          # TTL: 5 minutes (weekly macro trend)
+_FNO_CACHE: Dict[str, Dict[str, Any]] = {}                 # TTL: 3 minutes (F&O derivatives)
+_NEWS_SENTIMENT_CACHE: Dict[str, Dict[str, Any]] = {}      # TTL: 5 minutes (news catalysts)
+
 
 def is_market_hours_ist() -> bool:
     """Checks if Indian market is currently open (Monday-Friday 9:15 AM - 3:30 PM IST)."""
@@ -504,6 +511,10 @@ class StockPredictor:
     def __init__(self, symbol: str):
         self.symbol = symbol.strip().upper().replace(".NS", "")
         self.session = requests.Session()
+        from requests.adapters import HTTPAdapter
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=1)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             "Accept": "application/json"
@@ -545,78 +556,110 @@ class StockPredictor:
             impact_cost = 0.0
             nse_enriched = False
 
-            # Try to enrich company name, real VWAP & fundamentals from NSE if available
-            try:
-                import nsepython
-                data = nsepython.nse_quote(self.symbol)
-                if data and isinstance(data, dict):
-                    nse_enriched = True
-                    eq_resp = data.get("equityResponse", [{}])[0] if data.get("equityResponse") else data
-                    meta = eq_resp.get("metaData", {})
-                    trade = eq_resp.get("tradeInfo", {})
-                    sec = eq_resp.get("secInfo", {})
-                    pinfo = eq_resp.get("priceInfo", {})
+            # Check long-lived in-memory fundamentals cache (12-hour TTL) to eliminate 6s blocking NSE request
+            now_ts = time.time()
+            if self.symbol in _FUNDAMENTALS_CACHE and (now_ts - _FUNDAMENTALS_CACHE[self.symbol].get("time", 0)) < 43200:
+                fc = _FUNDAMENTALS_CACHE[self.symbol]["data"]
+                company_name = fc.get("company_name", company_name)
+                industry = fc.get("industry", industry)
+                stock_pe = fc.get("stock_pe")
+                sector_pe = fc.get("sector_pe")
+                deliv_pct = fc.get("deliv_pct", 0.0)
+                deliv_qty = fc.get("deliv_qty", 0)
+                total_mcap = fc.get("total_mcap", 0)
+                ffmc = fc.get("ffmc", 0)
+                impact_cost = fc.get("impact_cost", 0.0)
+                nse_enriched = fc.get("nse_enriched", True)
+            else:
+                # Try to enrich company name, real VWAP & fundamentals from NSE if available
+                try:
+                    import nsepython
+                    data = nsepython.nse_quote(self.symbol)
+                    if data and isinstance(data, dict):
+                        nse_enriched = True
+                        eq_resp = data.get("equityResponse", [{}])[0] if data.get("equityResponse") else data
+                        meta = eq_resp.get("metaData", {})
+                        trade = eq_resp.get("tradeInfo", {})
+                        sec = eq_resp.get("secInfo", {})
+                        pinfo = eq_resp.get("priceInfo", {})
 
-                    if meta.get("companyName"):
-                        company_name = meta["companyName"]
-                    if sec.get("industryInfo") or sec.get("sector"):
-                        industry = sec.get("industryInfo") or sec.get("sector")
-                    if trade.get("deliveryToTradedQuantity") is not None:
-                        try:
-                            deliv_pct = float(trade["deliveryToTradedQuantity"])
-                        except Exception:
-                            pass
-                    if trade.get("deliveryquantity") is not None:
-                        try:
-                            deliv_qty = int(trade["deliveryquantity"])
-                        except Exception:
-                            pass
-                    if trade.get("totalMarketCap") is not None:
-                        try:
-                            total_mcap = float(trade["totalMarketCap"])
-                        except Exception:
-                            pass
-                    if trade.get("ffmc") is not None:
-                        try:
-                            ffmc = float(trade["ffmc"])
-                        except Exception:
-                            pass
-                    if trade.get("impactCost") is not None:
-                        try:
-                            impact_cost = float(trade["impactCost"])
-                        except Exception:
-                            pass
-                    if sec.get("pdSymbolPe") is not None:
-                        try:
-                            val_p = float(sec["pdSymbolPe"])
-                            if val_p > 0:
-                                stock_pe = val_p
-                        except Exception:
-                            pass
-                    if sec.get("pdSectorPe") is not None:
-                        try:
-                            val_s = float(sec["pdSectorPe"])
-                            if val_s > 0:
-                                sector_pe = val_s
-                        except Exception:
-                            pass
+                        if meta.get("companyName"):
+                            company_name = meta["companyName"]
+                        if sec.get("industryInfo") or sec.get("sector"):
+                            industry = sec.get("industryInfo") or sec.get("sector")
+                        if trade.get("deliveryToTradedQuantity") is not None:
+                            try:
+                                deliv_pct = float(trade["deliveryToTradedQuantity"])
+                            except Exception:
+                                pass
+                        if trade.get("deliveryquantity") is not None:
+                            try:
+                                deliv_qty = int(trade["deliveryquantity"])
+                            except Exception:
+                                pass
+                        if trade.get("totalMarketCap") is not None:
+                            try:
+                                total_mcap = float(trade["totalMarketCap"])
+                            except Exception:
+                                pass
+                        if trade.get("ffmc") is not None:
+                            try:
+                                ffmc = float(trade["ffmc"])
+                            except Exception:
+                                pass
+                        if trade.get("impactCost") is not None:
+                            try:
+                                impact_cost = float(trade["impactCost"])
+                            except Exception:
+                                pass
+                        if sec.get("pdSymbolPe") is not None:
+                            try:
+                                val_p = float(sec["pdSymbolPe"])
+                                if val_p > 0:
+                                    stock_pe = val_p
+                            except Exception:
+                                pass
+                        if sec.get("pdSectorPe") is not None:
+                            try:
+                                val_s = float(sec["pdSectorPe"])
+                                if val_s > 0:
+                                    sector_pe = val_s
+                            except Exception:
+                                pass
 
-                    # Extract exchange reported VWAP if available
-                    if pinfo.get("vwap"):
-                        try:
-                            vwap = round(float(pinfo["vwap"]), 2)
-                        except Exception:
-                            pass
-                    elif trade.get("totalTradedValue") and trade.get("totalTradedVolume"):
-                        try:
-                            t_val = float(trade["totalTradedValue"])
-                            t_vol = float(trade["totalTradedVolume"])
-                            if t_vol > 0:
-                                vwap = round(t_val / t_vol, 2)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+                        # Store in cache
+                        _FUNDAMENTALS_CACHE[self.symbol] = {
+                            "time": now_ts,
+                            "data": {
+                                "company_name": company_name,
+                                "industry": industry,
+                                "stock_pe": stock_pe,
+                                "sector_pe": sector_pe,
+                                "deliv_pct": deliv_pct,
+                                "deliv_qty": deliv_qty,
+                                "total_mcap": total_mcap,
+                                "ffmc": ffmc,
+                                "impact_cost": impact_cost,
+                                "nse_enriched": True
+                            }
+                        }
+
+                        # Extract exchange reported VWAP if available
+                        if pinfo.get("vwap"):
+                            try:
+                                vwap = round(float(pinfo["vwap"]), 2)
+                            except Exception:
+                                pass
+                        elif trade.get("totalTradedValue") and trade.get("totalTradedVolume"):
+                            try:
+                                t_val = float(trade["totalTradedValue"])
+                                t_vol = float(trade["totalTradedVolume"])
+                                if t_vol > 0:
+                                    vwap = round(t_val / t_vol, 2)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
             # Honest Valuation classification without fabricated numbers
             if stock_pe and sector_pe and stock_pe > 0 and sector_pe > 0:
@@ -671,11 +714,15 @@ class StockPredictor:
         4. Max Pain Strike (Equilibrium magnet for option writers).
         Gracefully identifies non-F&O cash equity stocks.
         """
+        now_ts = time.time()
+        if self.symbol in _FNO_CACHE and (now_ts - _FNO_CACHE[self.symbol].get("time", 0)) < 180:
+            return _FNO_CACHE[self.symbol]["data"]
+
         try:
             import nsepython
             fno_data = nsepython.nse_fno(self.symbol)
             if not fno_data or not isinstance(fno_data, dict) or not fno_data.get("data"):
-                return {
+                res = {
                     "has_fno": False,
                     "badge": "⚪ CASH EQUITY ONLY (No F&O)",
                     "buildup": "CASH_ONLY",
@@ -684,6 +731,8 @@ class StockPredictor:
                     "pcr": None, "pcr_badge": "N/A", "max_pain": None,
                     "call_wall": None, "put_wall": None, "total_ce_oi": 0, "total_pe_oi": 0
                 }
+                _FNO_CACHE[self.symbol] = {"time": now_ts, "data": res}
+                return res
 
             items = fno_data.get("data", [])
             futures = [x for x in items if "FUT" in x.get("instrumentType", "")]
@@ -765,7 +814,7 @@ class StockPredictor:
                         min_loss = loss
                         max_pain = k
 
-            return {
+            res = {
                 "has_fno": True,
                 "badge": "⚡ F&O ACTIVE",
                 "buildup": buildup,
@@ -782,6 +831,8 @@ class StockPredictor:
                 "total_ce_oi": tot_ce,
                 "total_pe_oi": tot_pe
             }
+            _FNO_CACHE[self.symbol] = {"time": now_ts, "data": res}
+            return res
         except Exception:
             return {
                 "has_fno": False,
@@ -1015,10 +1066,14 @@ class StockPredictor:
         Fetches Weekly candles to confirm Multi-Timeframe (MTF) macro alignment.
         Swing traders never buy against the weekly macro trend.
         """
+        now_ts = time.time()
+        if self.symbol in _WEEKLY_MTF_CACHE and (now_ts - _WEEKLY_MTF_CACHE[self.symbol].get("time", 0)) < 300:
+            return _WEEKLY_MTF_CACHE[self.symbol]["data"]
+
         try:
             ticker = f"{self.symbol}.NS"
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1wk&range=1y"
-            res = self.session.get(url, timeout=5)
+            res = self.session.get(url, timeout=3.0)
             if res.status_code != 200:
                 return None
             data = res.json()
@@ -1045,7 +1100,7 @@ class StockPredictor:
                 w_trend = "NEUTRAL"
                 w_badge = "⚪ CONSOLIDATING / CHOPPY"
 
-            return {
+            res_data = {
                 "weekly_close": w_close,
                 "weekly_ema20": w_ema20,
                 "weekly_ema50": w_ema50,
@@ -1053,6 +1108,8 @@ class StockPredictor:
                 "weekly_trend": w_trend,
                 "weekly_badge": w_badge
             }
+            _WEEKLY_MTF_CACHE[self.symbol] = {"time": now_ts, "data": res_data}
+            return res_data
         except Exception:
             return None
 
@@ -1061,13 +1118,19 @@ class StockPredictor:
         Fetches live breaking company news from Google News India RSS.
         Scans for quarterly earnings, deals, order wins, and regulatory probes.
         """
+        now_ts = time.time()
+        if self.symbol in _NEWS_SENTIMENT_CACHE and (now_ts - _NEWS_SENTIMENT_CACHE[self.symbol].get("time", 0)) < 300:
+            return _NEWS_SENTIMENT_CACHE[self.symbol]["data"]
+
         query = f"{self.symbol} {company_name.split()[0]} stock India"
         rss_url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}+when:3d&hl=en-IN&gl=IN&ceid=IN:en"
 
         try:
-            res = self.session.get(rss_url, timeout=5)
+            res = self.session.get(rss_url, timeout=3.0)
             if res.status_code != 200:
-                return {"score": 0.0, "badge": "⚪ NEUTRAL NEWS", "headlines": [], "catalyst": None}
+                ret = {"score": 0.0, "badge": "⚪ NEUTRAL NEWS", "headlines": [], "catalyst": None}
+                _NEWS_SENTIMENT_CACHE[self.symbol] = {"time": now_ts, "data": ret}
+                return ret
 
             root = ET.fromstring(res.content)
             items = root.findall(".//item")
@@ -1113,7 +1176,7 @@ class StockPredictor:
             else:
                 badge = "⚪ NEUTRAL / BALANCED"
 
-            return {
+            ret = {
                 "score": score,
                 "badge": badge,
                 "headlines": headlines[:3],
@@ -1121,8 +1184,12 @@ class StockPredictor:
                 "bull_pts": bull_points,
                 "bear_pts": bear_points
             }
+            _NEWS_SENTIMENT_CACHE[self.symbol] = {"time": now_ts, "data": ret}
+            return ret
         except Exception:
-            return {"score": 0.0, "badge": "⚪ NEUTRAL NEWS", "headlines": [], "catalyst": None}
+            ret = {"score": 0.0, "badge": "⚪ NEUTRAL NEWS", "headlines": [], "catalyst": None}
+            _NEWS_SENTIMENT_CACHE[self.symbol] = {"time": now_ts, "data": ret}
+            return ret
 
     def fetch_quarterly_financial_results(self) -> Dict[str, Any]:
         """
@@ -1130,12 +1197,16 @@ class StockPredictor:
         filed directly with the National Stock Exchange of India (NSE).
         Calculates YoY earnings growth, margin trends, and financial health.
         """
+        now_ts = time.time()
+        if self.symbol in _QUARTERLY_RESULTS_CACHE and (now_ts - _QUARTERLY_RESULTS_CACHE[self.symbol].get("time", 0)) < 43200:
+            return _QUARTERLY_RESULTS_CACHE[self.symbol]["data"]
+
         try:
             import nsepython
             p_res = nsepython.nse_past_results(self.symbol)
             data = p_res.get('resCmpData', []) if isinstance(p_res, dict) else []
             if not data:
-                return {
+                ret = {
                     "has_results": False,
                     "period": "N/A",
                     "revenue_cr": "N/A",
@@ -1147,6 +1218,8 @@ class StockPredictor:
                     "status": "UNKNOWN",
                     "summary": "Results data unavailable."
                 }
+                _QUARTERLY_RESULTS_CACHE[self.symbol] = {"time": now_ts, "data": ret}
+                return ret
 
             q0 = data[0]
             to_dt = str(q0.get('re_to_dt') or 'Recent Quarter')
@@ -1206,7 +1279,7 @@ class StockPredictor:
             eps_str = f"₹{eps_num:.2f}" if eps_num > 0 else "₹--"
             margin_str = f"{op_margin:.1f}%" if op_margin > 0 else "N/A"
 
-            return {
+            ret = {
                 "has_results": True,
                 "period": to_dt,
                 "revenue_cr": rev_str,
@@ -1218,8 +1291,10 @@ class StockPredictor:
                 "status": status,
                 "summary": f"Latest quarterly results for period ending {to_dt} reported Net Revenue of {rev_str} and Net Profit of {pat_str} with {margin_str} operating margin ({yoy_str})."
             }
+            _QUARTERLY_RESULTS_CACHE[self.symbol] = {"time": now_ts, "data": ret}
+            return ret
         except Exception:
-            return {
+            ret = {
                 "has_results": False,
                 "period": "N/A",
                 "revenue_cr": "N/A",
@@ -1231,6 +1306,8 @@ class StockPredictor:
                 "status": "UNKNOWN",
                 "summary": "Results data unavailable."
             }
+            _QUARTERLY_RESULTS_CACHE[self.symbol] = {"time": now_ts, "data": ret}
+            return ret
 
     def predict_price_movement(self) -> Dict[str, Any]:
         """
@@ -1248,11 +1325,20 @@ class StockPredictor:
         if not nse_data:
             return self._generate_fallback_prediction()
 
-        tech = self.fetch_historical_technicals()
-        fno = self.fetch_fno_derivative_intelligence()
-        weekly = self.fetch_weekly_mtf()
-        news = self.fetch_stock_news_sentiment(nse_data["company_name"])
-        results = self.fetch_quarterly_financial_results()
+        # Execute 5 pillar evaluations concurrently via ThreadPool to slash latency by up to 75%
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            fut_tech = executor.submit(self.fetch_historical_technicals)
+            fut_fno = executor.submit(self.fetch_fno_derivative_intelligence)
+            fut_weekly = executor.submit(self.fetch_weekly_mtf)
+            fut_news = executor.submit(self.fetch_stock_news_sentiment, nse_data["company_name"])
+            fut_results = executor.submit(self.fetch_quarterly_financial_results)
+
+            tech = fut_tech.result()
+            fno = fut_fno.result()
+            weekly = fut_weekly.result()
+            news = fut_news.result()
+            results = fut_results.result()
 
         ltp = nse_data["ltp"]
         vwap = nse_data["vwap"]
